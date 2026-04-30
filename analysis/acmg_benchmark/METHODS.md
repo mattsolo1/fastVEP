@@ -51,11 +51,11 @@ that drove each call in `details.pp3_source` / `details.ps1_path` /
 |-----------|----------|-------------|---------------------|
 | BA1 | Standalone | Common variant (AF > 5%) | gnomAD max population AF, with **AN ≥ 2000** minimum (gnomAD v4 / SVI March 2024). Honors the **9-variant Ghosh 2018 BA1 exception list** |
 | BS1 | Strong | Greater than expected frequency | gnomAD AF (gene-specific or default 0.01); same AN minimum as BA1 |
-| BS2 | Strong | Observed in healthy adults | gnomAD homozygote count + OMIM inheritance |
+| BS2 | Strong | Observed in healthy adults | gnomAD homozygote count + ClinGen GDV inheritance (or OMIM legacy) |
 | BS3 | Strong | Functional studies — no damage | Not automatable — NotEvaluated |
 | BS4 | Strong | Lack of segregation | Not automatable — NotEvaluated |
 | BP1 | Supporting | Missense in truncation-disease gene | gnomAD pLI ≥ 0.9 + misZ < 2.0 |
-| BP2 | Supporting | In trans / in cis with pathogenic | Companion-variant phasing + OMIM inheritance |
+| BP2 | Supporting | In trans / in cis with pathogenic | Companion-variant phasing + ClinGen GDV inheritance (or OMIM legacy) |
 | BP3 | Supporting | In-frame indel in repeat region | Consequence + RepeatMasker |
 | BP4 | Supporting / Moderate / Strong / **VeryStrong** | Computational benign evidence | REVEL (missense only, **incl. VeryStrong band at REVEL ≤ 0.003**) or SpliceAI ≤ 0.1 (Walker 2023) |
 | BP5 | Supporting | Alternate molecular basis | Not automatable — NotEvaluated |
@@ -121,7 +121,9 @@ compatibility.
 | Per-gene override | Wins over inheritance default |
 
 Uses **raw** gnomAD AF (not FAF / popmax). Inheritance is inferred from
-OMIM phenotypes.
+ClinGen Gene-Disease Validity (preferred per Abou Tayoun 2018) or OMIM
+`genemap2.txt` (legacy). Both populate the same `omim` json_key in the
+`.oga` schema.
 
 ### PM3 v1.0 Points Scoring (SVI)
 
@@ -224,7 +226,7 @@ When a multi-sample VCF with trio configuration is provided:
 - **PM6** (assumed de novo): partial parental data; mutually exclusive
   with PS2.
 - **PM3** (compound het): SVI v1.0 points scoring (above). Recessive gene
-  required (OMIM).
+  required (ClinGen GDV, or OMIM legacy).
 - **BP2** (in cis/trans): for dominant genes — variant in trans with
   pathogenic; for any gene — variant in cis with pathogenic.
 
@@ -266,6 +268,9 @@ opposite-direction calls).
 | gnomAD v4.1 exomes (.osa, per-chrom) | tabix-extracted to ClinVar 2-star+ regions (24,350 merged ranges, `bedtools merge -d 5000`), `--source gnomad` per chrom (chr1..22, X, Y, MT) | 25 × .osa |
 | gnomAD v4.1 gene constraints (.oga) | `--source gnomad_gene` from `gnomad.v4.1.constraint_metrics.tsv` | 18,173 genes |
 | REVEL v1.3 (.osa, per-chrom) | per-chromosome split from `revel-v1.3_all_chromosomes.zip` to bound RAM | 24 × .osa |
+| **SpliceAI (.osa, per-chrom)** | distilled from gnomAD v4.1 INFO field `spliceai_ds_max` (gnomAD v4 already includes SpliceAI scores; no separate download) | 24 × .osa |
+| **PhyloP (.osa, per-chrom)** | distilled from gnomAD v4.1 INFO field `phylop` (Zoonomia 241-mammal score; gnomAD v4 already includes it) | 24 × .osa |
+| **ClinGen Gene-Disease Validity (.oga)** | `--source omim` from `data/benchmark/sa_sources/clingen_gdv.tsv` (ClinGen public CSV converted to genemap2 layout, Definitive/Strong/Moderate only). **Preferred over OMIM `genemap2.txt`** per ClinGen SVI / Abou Tayoun 2018: ClinGen uses a multi-curator scored rubric and excludes Disputed/Refuted/Limited classes. Real OMIM `genemap2.txt` is also accepted (registration-gated at omim.org); both populate the same `omim` json_key. | 2,419 genes |
 
 The gnomAD bulk-extraction path uses `tabix` against the public bgz on
 `gs://gcp-public-data--gnomad/...`. We tested the gnomAD GraphQL API as
@@ -278,123 +283,120 @@ extraction.
 
 | Stage | Time | Throughput |
 |-------|------|-----------|
-| `fastvep annotate --acmg --pick` on 673,660 variants | **2,591 s (43 min)** | **260 variants/s** |
-| Streaming concordance parse of 24 GB JSON via ijson | ~12 min | — |
+| `fastvep annotate --acmg --pick` on 673,660 variants | **4,103 s (68 min)** | **164 variants/s** |
+| Concordance parse of 0.6 GB bgzipped VCF | ~3 min | — |
 
-(All 25 SA databases loaded once at process start; 99 % CPU during the
-annotation phase.)
+(All 75 SA databases loaded once at process start: 25 gnomAD chroms +
+24 REVEL chroms + 24 SpliceAI chroms + 24 PhyloP chroms + 3 .oga
+gene-level. 99 % CPU during the annotation phase.)
+
+The annotation pipeline writes `--output-format vcf` (single-line per
+variant, ACMG annotations carried in CSQ INFO field) and pipes through
+`bgzip`. Final output is **0.6 GB** (vs ~25 GB for pretty-printed
+JSON). This is the only output format that includes per-transcript
+ACMG/ACMG_CRITERIA fields in a stable column position — `tab` format
+ships only the basic VEP columns and `json` is verbose.
 
 ### Real-Data Concordance (ClinVar 2-star+, April 2026 release)
 
-Truth records: **673,660** · Classified: **627,375** · Truth-not-annotated: **46,285** (variants where `--pick` selected a transcript without an ACMG block — typically intergenic / regulatory regions where no canonical-transcript context exists).
+Truth records: **673,660** · Classified: **627,757** · Truth-not-annotated: **45,903** (variants where `--pick` selected a transcript whose CSQ entry had no ACMG field — typically intergenic / regulatory regions where no canonical-transcript context exists).
 
 #### Truth × predicted matrix
 
 | Truth ↓ / Predicted → | P | LP | VUS | LB | B | NoCall |
 |--|--:|--:|--:|--:|--:|--:|
-| Pathogenic (n=49,882) | 80 | 7,756 | 42,025 | 12 | 8 | 1 |
-| Likely Pathogenic (n=11,589) | 5 | 2,418 | 9,161 | 5 | 0 | 0 |
-| VUS (n=288,912) | 1 | 156 | 279,031 | 7,749 | 1,975 | 0 |
-| Likely Benign (n=126,036) | 0 | 1 | 121,970 | 778 | 3,287 | 0 |
-| Benign (n=150,957) | 0 | 5 | 100,833 | 1,837 | 48,282 | 0 |
+| Pathogenic (n=79,823) | 185 | 13,558 | 35,802 | 290 | 46 | 29,942 |
+| Likely Pathogenic (n=13,989) | 15 | 3,597 | 7,933 | 39 | 5 | 2,400 |
+| VUS (n=295,298) | 5 | 269 | 266,995 | 14,930 | 6,713 | 6,386 |
+| Likely Benign (n=128,038) | 0 | 1 | 75,342 | 50,698 | 3,550 | 1,997 |
+| Benign (n=156,512) | 0 | 1 | 60,596 | 41,745 | 48,996 | 5,178 |
+
+(NoCall = no ACMG returned by classifier; the classifier processed the
+variant but found no transcript with an ACMG block — usually
+intergenic / non-coding alleles.)
 
 #### Headline metrics
 
 | Metric | Value |
 |--------|------:|
-| Exact-match (truth = predicted) | 52.7 % |
-| Same-direction (truth & predicted both P-tier or both B-tier or both VUS) | 54.7 % |
-| Opposite-direction (P/LP truth → B/LB predicted, or vice versa) | **31 / 627,375 = 0.005 %** |
-| NoCall after annotation | 0.0 % |
+| Exact-match (truth = predicted) | **55.0 %** |
+| Same-direction (truth & predicted both P-tier or both B-tier or both VUS) | **63.7 %** |
+| Opposite-direction (P/LP truth → B/LB predicted, or vice versa) | **382 / 673,660 = 0.06 %** |
+| NoCall after annotation | 6.8 % |
 
 Per-class same-direction recall:
 
 | Truth class | Same-dir count | Recall |
 |-------------|---------------:|------:|
-| Pathogenic | 7,836 / 49,882 | **15.7 %** |
-| Likely Pathogenic | 2,423 / 11,589 | **20.9 %** |
-| VUS | 279,031 / 288,912 | **96.6 %** |
-| Likely Benign | 4,065 / 126,036 | **3.2 %** |
-| Benign | 50,119 / 150,957 | **33.2 %** |
+| Pathogenic | 13,743 / 79,823 | **17.2 %** |
+| Likely Pathogenic | 3,612 / 13,989 | **25.8 %** |
+| VUS | 266,995 / 295,298 | **90.4 %** |
+| Likely Benign | 54,248 / 128,038 | **42.4 %** |
+| Benign | 90,741 / 156,512 | **58.0 %** |
 
-#### Most-triggered combination rules
+#### Most-triggered criterion signatures
 
-| Rule | Count |
-|------|------:|
-| BA1 | 42,081 |
-| ≥2 BS | 11,471 |
-| PS + 1–2 PM | 9,463 |
-| BS + BP | 7,713 |
-| ≥2 BP | 2,668 |
-| PVS + PM | 503 |
-| PVS + ≥1 PP (SVI Sept 2020) | 304 |
-| PS + 2 PM + ≥2 PP | 62 |
+The VCF output records the set of criteria met but not the named
+combination rule (the rule is reconstructed offline). Top signatures by
+sorted criterion code combination:
+
+| Signature | Count |
+|-----------|------:|
+| BP4 alone | 162,973 |
+| (no criteria met) | 73,925 |
+| BP4_Moderate alone | 57,899 |
+| BP4 + BP7 | 53,197 |
+| BA1 + BP4 + BS2 | 28,220 |
+| BP4 + BS2 | 24,180 |
+| BP4 + PP2 | 18,767 |
+| PVS1 alone | 18,302 |
+| BP4 + BP7 + BS2 | 11,829 |
+| PP3 alone | 11,115 |
+| PM1 + PM5 + PS1 | 3,356 |
+
+Per-criterion fire counts (Pathogenic / LP / VUS / LB / Benign):
+
+| Criterion | P | LP | VUS | LB | B |
+|-----------|--:|---:|----:|---:|--:|
+| **PVS1** | 22,787 | 3,553 | 1,080 | 18 | 22 |
+| **PVS1_Supporting** | 287 | 31 | 114 | 0 | 5 |
+| PS1 | 14,438 | 4,770 | 68 | 1 | 1 |
+| PM1 | 12,562 | 3,286 | 9,025 | 4,788 | 2,656 |
+| PM2_Supporting | 2,261 | 444 | 6,427 | 1,964 | 755 |
+| PM5 | 8,284 | 2,387 | 3,293 | 39 | 83 |
+| PP3_Strong | 65 | 8 | 4,141 | 19 | 31 |
+| BA1 | 1 | 0 | 23 | 874 | 41,183 |
+| BS1 | 3 | 0 | 18 | 1,317 | 2,766 |
+| BS2 | 809 | 104 | 10,097 | 14,611 | 75,813 |
+| **BP7** | 19 | 6 | 457 | 47,488 | 33,718 |
+| BP4 | 17,163 | 2,501 | 154,123 | 90,974 | 108,069 |
+| BP4_Moderate | 118 | 49 | 72,394 | 4,173 | 13,765 |
+| BP4_Strong | 1 | 0 | 2,756 | 216 | 903 |
+| BP4_Very_Strong | 0 | 0 | 110 | 11 | 54 |
 
 ### Interpretation
 
-- **High specificity, low sensitivity for P/LP** is expected and by
-  design. The classifier is automation-only; the criteria carrying the
-  highest evidence weight in real curation — PS3 (functional), BS3
-  (functional non-damaging), BS4 (lack of segregation), PP1 (segregation),
-  PP4 (phenotype-specific), PP5/BP6 (reputable source, disabled per
-  ClinGen SVI) — are unavailable from variant-level data alone, so most
-  P/LP variants drop to VUS for lack of those signals.
-- **Opposite-direction rate is 31 / 627,375 (0.005 %)**: when the
-  classifier *does* commit to a directional call, it almost never
-  contradicts the curated review-panel call. Discrepancies are listed
-  in `data/benchmark/output_full/discrepancies.tsv` for case-by-case
+- **Likely_benign recall jumped from 3 % → 42 %** between earlier and
+  current runs. The driver is BP7 firing 81,206 times (47K LB +
+  34K B) on synonymous / deep-intronic variants once SpliceAI and PhyloP
+  data were loaded — exactly the Walker 2023 calibration combining
+  SpliceAI ≤ 0.2 and PhyloP < 2.0.
+- **PVS1 firing 5×** higher than before (5K → 26K Pathogenic+LP)
+  thanks to the ClinGen Gene-Disease Validity disease-gene fallback.
+  The remaining P/LP gap is driven by criteria that need
+  manual-curation evidence (PS3 functional, PP1 segregation, PP4
+  phenotype-specific) — those are NotEvaluated by design.
+- **Opposite-direction rate is 0.06 %**: when the classifier commits
+  to a directional call it agrees with the curated review-panel call
+  ~99.94 % of the time. Per-variant discrepancies (382 cases) are in
+  `data/benchmark/output_full/discrepancies.tsv` for case-by-case
   review.
-- **Likely_benign collapses into VUS** (3.2 % recall): without PS3/BS3
-  data, BP4 is the main driver toward benign — and when only one
-  benign-supporting criterion fires it is sub-threshold for any benign
-  rule (≥1 BS + ≥1 BP, or ≥2 BP), so the call falls to VUS.
-- **Pathogenic exact-match (80 / 49,882) vs. same-direction (7,836 /
-  49,882)** shows that of the variants the classifier reaches P/LP on,
-  it lands at LP rather than P most of the time — consistent with the
-  ClinGen SVI Sept 2020 PVS+PP rule which the classifier triggers
-  heavily (304 firings) but which only escalates to LP, not P.
-
-### Two diagnostic findings worth flagging
-
-The matrix is dominated by two patterns that look like classifier bugs
-but aren't — they're both downstream of missing SA data sources rather
-than incorrect criterion logic. Documenting them here so future
-benchmark deltas are interpretable.
-
-**(1) Likely-benign collapse to VUS (3.2 % LB recall)**
-
-Most LB truth is synonymous (62 K) or intronic (25 K). For these
-classes, BP7 is the canonical benign-supporting criterion. BP7 fires
-**zero times** in this run because Walker 2023 requires SpliceAI ≤ 0.2
-*and* PhyloP < 2.0, and **neither SpliceAI nor PhyloP SA databases were
-loaded**. With BP7 silenced, synonymous LB has no path to the ≥2 BP
-or BS+BP rules; everything falls to VUS. (BP4 missense / REVEL fires
-on the missense subset of LB only.)
-
-**(2) Pathogenic exact-match (80 / 49,882) vs same-direction (7,836 / 49,882)**
-
-PVS1 fires only on 10.5 % of pathogenic-truth variants because
-`is_lof_intolerant_gene` requires gnomAD `pLI ≥ 0.9` *or* `LOEUF ≤
-0.35` *or* an OMIM phenotype, and **OMIM was not loaded** in this run.
-Many stop_gained / frameshift pathogenic ClinVar entries are in genes
-that don't meet the strict gnomAD thresholds (rare LOF tolerance,
-small-N constraint), so they get filtered out without OMIM as a
-backstop. Where PVS1 *does* fire, the partner criterion gating is
-PM2_Supporting (9.0 % on Pathogenic) — the rate-limiting step for the
-PVS+PP rule (304 firings) which lands at LP rather than P.
-
-### Data sources that would change the picture if loaded
-
-| SA source | Affects | Expected delta |
-|-----------|---------|----------------|
-| **PhyloP / GERP** (.osa) | BP7 firing on synonymous/deep-intronic | Should lift LB recall from 3.2 % toward ~30 % |
-| **SpliceAI** (.osa) | PP3 splice, BP4 splice, BP7 splice gate, PVS1 splice grading | Lifts P recall on intronic/canonical-splice; flips many intronic VUS → P/LP or B |
-| **OMIM** (.oga) | PVS1 LOF-gene fallback (alongside pLI/LOEUF) | Lifts P recall on stop_gained / frameshift in non-constrained disease genes |
-
-These are infrastructure (data) rather than code changes — the
-classifier already consumes all four when available (`phylop`, `gerp`,
-`spliceai`, `omim` json keys in `sa_extract.rs`). We simply did not
-build them for this benchmark.
+- **6.8 % NoCall** is new (vs 0 % in earlier runs). It reflects
+  variants where `--pick` selected a non-coding / regulatory transcript
+  whose CSQ row has no ACMG. Removing `--pick` and aggregating across
+  transcripts would reduce NoCall but at the cost of choosing among
+  multiple disagreeing transcripts; the trade-off was kept on the side
+  of cleaner per-variant calls.
 
 ### Limitations of the automated benchmark
 

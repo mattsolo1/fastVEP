@@ -307,7 +307,12 @@ fn is_lof_intolerant_gene(input: &ClassificationInput, config: &AcmgConfig) -> b
         }
     }
 
-    // Check OMIM for disease associations (proxy for disease gene)
+    // Disease-gene fallback per ClinGen SVI / Abou Tayoun 2018: when
+    // gnomAD constraints don't reach the LOF threshold, accept a
+    // curated disease-gene association as evidence the gene is
+    // LOF-relevant. The .oga is populated from ClinGen Gene-Disease
+    // Validity (preferred — Strong/Definitive/Moderate only) or OMIM
+    // `genemap2.txt` (legacy). Both share the `omim` json_key.
     if let Some(ref omim) = input.omim {
         if omim
             .phenotypes

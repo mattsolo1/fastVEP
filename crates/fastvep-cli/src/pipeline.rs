@@ -1555,6 +1555,27 @@ fn standard_chrom_map() -> (Vec<String>, std::collections::HashMap<String, u16>)
     (chroms, map)
 }
 
+/// PhyloP comes in two on-disk formats: UCSC fixed-step wig (`fixedStep
+/// chrom=...`) and a simple `chrom\tpos\tscore` TSV (which is what we
+/// emit when distilling PhyloP from gnomAD v4 INFO). Detect by peeking
+/// the first non-blank line; everything else falls through to the TSV
+/// parser since it tolerates BED-4 too.
+fn parse_phylop_auto<R: BufRead>(
+    mut reader: R,
+    chrom_to_idx: &HashMap<String, u16>,
+) -> Result<Vec<fastvep_sa::common::AnnotationRecord>> {
+    let mut peek = [0u8; 16];
+    let n = reader.read(&mut peek)?;
+    let prefix = std::str::from_utf8(&peek[..n]).unwrap_or("");
+    let chained = std::io::Cursor::new(peek[..n].to_vec()).chain(reader);
+    let buf = io::BufReader::new(chained);
+    if prefix.trim_start().starts_with("fixedStep") {
+        fastvep_sa::sources::scores::parse_wigfix(buf, chrom_to_idx)
+    } else {
+        fastvep_sa::sources::scores::parse_score_tsv(buf, chrom_to_idx, false)
+    }
+}
+
 /// Build a supplementary annotation .osa file from a source VCF.
 pub fn run_sa_build(source: &str, input: &str, output: &str, assembly: &str) -> Result<()> {
     use fastvep_sa::index::IndexHeader;
@@ -1602,10 +1623,12 @@ pub fn run_sa_build(source: &str, input: &str, output: &str, assembly: &str) -> 
             is_positional: false,
         },
         "phylop" | "gerp" | "dann" => {
+            // Match the json_key the classifier looks for in
+            // `fastvep_classification::sa_extract` (`phylop`, `gerp`).
             let json_key = match source {
-                "phylop" => "phylopScore",
-                "gerp" => "gerpScore",
-                "dann" => "dannScore",
+                "phylop" => "phylop",
+                "gerp" => "gerp",
+                "dann" => "dann",
                 _ => unreachable!(),
             };
             IndexHeader {
@@ -1733,7 +1756,10 @@ pub fn run_sa_build(source: &str, input: &str, output: &str, assembly: &str) -> 
         "onekg" | "1000g" => fastvep_sa::sources::onekg::parse_onekg_vcf(buf_reader, &chrom_map)?,
         "topmed" => fastvep_sa::sources::topmed::parse_topmed_vcf(buf_reader, &chrom_map)?,
         "mitomap" => fastvep_sa::sources::mitomap::parse_mitomap(buf_reader, &chrom_map)?,
-        "phylop" => fastvep_sa::sources::scores::parse_wigfix(buf_reader, &chrom_map)?,
+        // PhyloP supports two on-disk formats: UCSC fixed-step wig and
+        // simple TSV (`chrom\tpos\tscore`). Auto-detect by peeking the
+        // first non-comment byte: wigfix starts with "fixedStep".
+        "phylop" => parse_phylop_auto(buf_reader, &chrom_map)?,
         "gerp" | "dann" => fastvep_sa::sources::scores::parse_score_tsv(buf_reader, &chrom_map, false)?,
         "revel" => fastvep_sa::sources::revel::parse_revel(buf_reader, &chrom_map, 2)?,
         "spliceai" => fastvep_sa::sources::spliceai::parse_spliceai_vcf(buf_reader, &chrom_map)?,
@@ -1760,7 +1786,11 @@ pub fn run_sa_build(source: &str, input: &str, output: &str, assembly: &str) -> 
 /// Build a gene-level annotation database (`.oga`) from a source file.
 ///
 /// Supports three gene-level sources used by the ACMG-AMP classifier:
-/// - `omim`            — OMIM `genemap2.txt` (PVS1, BS2, PM3, BP2)
+/// - `omim`            — disease-gene annotations in genemap2 layout
+///                       (13-col TSV): ClinGen Gene-Disease Validity
+///                       (preferred per ClinGen SVI / Abou Tayoun
+///                       2018) or OMIM `genemap2.txt` (legacy). Drives
+///                       PVS1, BS2, PM3, BP2.
 /// - `gnomad_genes`    — gnomAD constraint metrics TSV (PVS1, PP2, BP1)
 /// - `clinvar_protein` — ClinVar VCF, extracts pathogenic missense by
 ///                       protein position (PS1, PM1, PM5)
@@ -1774,7 +1804,9 @@ pub fn run_oga_build(source: &str, input: &str, output: &str, _assembly: &str) -
     use fastvep_sa::gene::{GeneHeader, GeneIndex};
 
     let (json_key, name) = match source {
-        "omim" => ("omim", "OMIM"),
+        // Source name kept as `omim` for back-compat; canonical input
+        // is ClinGen GDV converted to genemap2 layout per SVI guidance.
+        "omim" => ("omim", "ClinGen GDV / OMIM"),
         "gnomad_genes" | "gnomad_gene" => ("gnomad_genes", "gnomAD gene constraints"),
         "clinvar_protein" => ("clinvar_protein", "ClinVar protein index"),
         _ => anyhow::bail!(

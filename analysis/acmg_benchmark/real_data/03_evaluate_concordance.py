@@ -4,8 +4,12 @@ Evaluate ACMG classifier concordance against ClinVar 2-star+ truth.
 
 Inputs
   --truth        TSV: chrom\tpos\tref\talt\tgene\tclnsig\tnormalized_class\treview_stars\trcv
-  --predictions  fastvep --output-format json (single JSON array; each
-                 element has transcript_consequences[].acmg)
+  --predictions  fastvep --output-format vcf (.vcf.gz / .vcf / .vcf.bgz)
+
+The VCF stores annotations in INFO/CSQ as a comma-separated list of
+pipe-separated transcript entries. The CSQ format header line carries
+the field order. We pick the first CSQ entry whose ACMG field is
+non-empty (with `--pick` this is usually the canonical transcript).
 
 Outputs (under --out)
   concordance_matrix.csv             5×6 (truth × predicted+NoCall)
@@ -18,12 +22,10 @@ Outputs (under --out)
 """
 
 import argparse
-import json
 import csv
+import gzip
 from pathlib import Path
 from collections import defaultdict, Counter
-
-import ijson
 
 CLASSES = ["Pathogenic", "Likely_pathogenic", "VUS", "Likely_benign", "Benign"]
 
@@ -38,28 +40,117 @@ def load_truth(path):
     return truth
 
 
-def variant_keys(rec):
-    chrom = str(rec.get("seq_region_name") or "")
-    pos = str(rec.get("start") or rec.get("position") or "")
-    allele = rec.get("allele_string", "") or ""
-    if "/" not in allele:
+def open_text(path):
+    """Open .vcf, .vcf.gz, or .vcf.bgz transparently for text reading."""
+    if path.endswith(".gz") or path.endswith(".bgz"):
+        return gzip.open(path, "rt")
+    return open(path, "rt")
+
+
+def parse_csq_format(header_line: str) -> list[str]:
+    """Extract field names from a CSQ INFO header.
+
+    The header form is:
+      ##INFO=<ID=CSQ,Number=.,Type=String,Description="... Format: A|B|C|...">
+    """
+    if "Format: " not in header_line:
         return []
-    ref, alts = allele.split("/", 1)
-    return [(chrom, pos, ref, a) for a in alts.split(",")]
+    fmt = header_line.split("Format: ", 1)[1].rstrip('">\n')
+    return fmt.split("|")
 
 
 def class_label(c):
-    if c == "Pathogenic":
+    """Map fastvep ACMG codes (P/LP/VUS/LB/B and long forms) → fixed labels."""
+    if not c:
+        return None
+    c = c.strip()
+    if c in ("P", "Pathogenic"):
         return "Pathogenic"
-    if c in ("Likely_pathogenic", "LikelyPathogenic"):
+    if c in ("LP", "Likely_pathogenic", "LikelyPathogenic"):
         return "Likely_pathogenic"
-    if c in ("Uncertain_significance", "UncertainSignificance", "VUS"):
+    if c in ("VUS", "Uncertain_significance", "UncertainSignificance"):
         return "VUS"
-    if c in ("Likely_benign", "LikelyBenign"):
+    if c in ("LB", "Likely_benign", "LikelyBenign"):
         return "Likely_benign"
-    if c == "Benign":
+    if c in ("B", "Benign"):
         return "Benign"
     return None
+
+
+def parse_info_csq(info: str) -> str | None:
+    """Extract the CSQ= field value from an INFO column."""
+    for piece in info.split(";"):
+        if piece.startswith("CSQ="):
+            return piece[4:]
+    return None
+
+
+def variant_records(vcf_path):
+    """Yield (chrom, pos, ref, alt, csq_field_idx_map, csq_entries_for_alt)
+    for each variant in the VCF. Multi-allelic sites are split per ALT."""
+    csq_idx = None
+    with open_text(vcf_path) as f:
+        for line in f:
+            if line.startswith("##"):
+                if "ID=CSQ" in line:
+                    csq_fields = parse_csq_format(line)
+                    csq_idx = {name: i for i, name in enumerate(csq_fields)}
+                continue
+            if line.startswith("#"):
+                continue
+            if csq_idx is None:
+                # No CSQ header — bail; nothing to extract.
+                return
+            cols = line.rstrip("\n").split("\t")
+            if len(cols) < 8:
+                continue
+            chrom = cols[0].removeprefix("chr")
+            pos = cols[1]
+            ref = cols[3]
+            alts = cols[4].split(",")
+            info = cols[7]
+            csq_field = parse_info_csq(info)
+            if csq_field is None:
+                continue
+            entries = csq_field.split(",")
+            # Group entries by their ALT (CSQ field 0 = Allele).
+            by_alt: dict[str, list[list[str]]] = defaultdict(list)
+            for ent in entries:
+                parts = ent.split("|")
+                if len(parts) <= csq_idx.get("ACMG", -1):
+                    continue
+                alt_field = parts[0]
+                by_alt[alt_field].append(parts)
+            for alt in alts:
+                yield (chrom, pos, ref, alt, csq_idx, by_alt.get(alt, []))
+
+
+def pick_csq(entries: list[list[str]], csq_idx: dict[str, int]):
+    """Return (acmg_label, criteria_str, consequence_top, canonical_flag)
+    for the picked transcript. Prefers entries with a non-empty ACMG;
+    among those, prefers CANONICAL=YES; falls back to first non-empty."""
+    if not entries:
+        return None, None, "unknown", False
+    acmg_i = csq_idx.get("ACMG", -1)
+    crit_i = csq_idx.get("ACMG_CRITERIA", -1)
+    csq_i = csq_idx.get("Consequence", -1)
+    can_i = csq_idx.get("CANONICAL", -1)
+
+    def acmg_of(parts):
+        return parts[acmg_i] if 0 <= acmg_i < len(parts) else ""
+
+    populated = [p for p in entries if acmg_of(p)]
+    pool = populated or entries
+    canon = [p for p in pool if can_i >= 0 and len(p) > can_i and p[can_i] == "YES"]
+    chosen = canon[0] if canon else pool[0]
+
+    acmg = acmg_of(chosen) if populated else ""
+    crit = chosen[crit_i] if 0 <= crit_i < len(chosen) else ""
+    cs = chosen[csq_i] if 0 <= csq_i < len(chosen) else ""
+    canonical = (can_i >= 0 and len(chosen) > can_i and chosen[can_i] == "YES")
+    # Top consequence is the first listed (CSQ stores them &-separated).
+    top = cs.split("&")[0] if cs else "unknown"
+    return acmg, crit, top, canonical
 
 
 def main():
@@ -79,74 +170,51 @@ def main():
     cm_consequence = defaultdict(lambda: {tc: {pc: 0 for pc in CLASSES + ["NoCall"]} for tc in CLASSES})
     cm_chrom = defaultdict(lambda: {tc: {pc: 0 for pc in CLASSES + ["NoCall"]} for tc in CLASSES})
     criterion_fires = {tc: Counter() for tc in CLASSES}
-    criterion_evaluable = {tc: Counter() for tc in CLASSES}
     rule_dist = Counter()
     discrepancies = []
     matched = set()
     n_classified = 0
 
-    # Stream-parse: fastvep --output-format json emits one JSON array
-    # (pretty-printed) which can run into 20+ GB on a full ClinVar 2-star+
-    # set. ijson keeps memory bounded; line-delimited JSONL also works.
-    def _records(path):
-        with open(path) as fh:
-            first = fh.read(1)
-            fh.seek(0)
-            if first == "[":
-                yield from ijson.items(fh, "item")
-            else:
-                for line in fh:
-                    line = line.strip()
-                    if line:
-                        yield json.loads(line)
-
-    for rec in _records(args.predictions):
-        for k in variant_keys(rec):
-            if k not in truth:
-                continue
-            t = truth[k]
-            tc_truth = t["normalized_class"]
-            acmg = None
-            top_csq = "unknown"
-            for tc in rec.get("transcript_consequences", []) or []:
-                if "acmg" in tc:
-                    acmg = tc["acmg"]
-                    cs = tc.get("consequence_terms", [])
-                    if cs:
-                        top_csq = cs[0]
-                    break
-            if acmg is None:
-                cm[tc_truth]["NoCall"] += 1
-                cm_chrom[k[0]][tc_truth]["NoCall"] += 1
-                continue
-            pc = class_label(acmg.get("classification")) or "NoCall"
-            cm[tc_truth][pc] += 1
-            cm_chrom[k[0]][tc_truth][pc] += 1
-            cm_consequence[top_csq][tc_truth][pc] += 1
-            rule = acmg.get("triggered_rule") or ""
-            if rule:
-                rule_dist[rule] += 1
-            for c in acmg.get("criteria", []) or []:
-                if c.get("evaluated"):
-                    criterion_evaluable[tc_truth][c["code"]] += 1
-                if c.get("met"):
-                    criterion_fires[tc_truth][c["code"]] += 1
-            n_classified += 1
-            matched.add(k)
-            if (
-                tc_truth in ("Pathogenic", "Likely_pathogenic")
-                and pc in ("Benign", "Likely_benign", "VUS", "NoCall")
-            ) or (
-                tc_truth in ("Benign", "Likely_benign")
-                and pc in ("Pathogenic", "Likely_pathogenic")
-            ):
-                if len(discrepancies) < 10000:
-                    met_codes = ";".join(c["code"] for c in (acmg.get("criteria") or []) if c.get("met"))
-                    discrepancies.append((
-                        k[0], k[1], k[2], k[3], t["gene"], t["review_stars"],
-                        tc_truth, pc, top_csq, rule, met_codes
-                    ))
-            break
+    for chrom, pos, ref, alt, csq_idx, entries in variant_records(args.predictions):
+        key = (chrom, pos, ref, alt)
+        if key not in truth:
+            continue
+        t = truth[key]
+        tc_truth = t["normalized_class"]
+        acmg, criteria_str, top_csq, _canonical = pick_csq(entries, csq_idx)
+        if not acmg:
+            cm[tc_truth]["NoCall"] += 1
+            cm_chrom[chrom][tc_truth]["NoCall"] += 1
+            continue
+        pc = class_label(acmg) or "NoCall"
+        cm[tc_truth][pc] += 1
+        cm_chrom[chrom][tc_truth][pc] += 1
+        cm_consequence[top_csq][tc_truth][pc] += 1
+        # ACMG_CRITERIA is "&"-joined inside CSQ (because "," is a record
+        # separator in INFO and ";" terminates INFO entries). Each token is
+        # a met criterion code (e.g. BP4_Moderate, PVS1, PM2_Supporting).
+        criteria = [c for c in criteria_str.split("&") if c] if criteria_str else []
+        for c in criteria:
+            criterion_fires[tc_truth][c] += 1
+        # Triggered-rule distribution: derive from the unique combination.
+        # We don't get the named rule from VCF output; sort criteria as a
+        # surrogate so identical rule signatures group together.
+        rule = "+".join(sorted(set(criteria))) if criteria else "(none)"
+        rule_dist[rule] += 1
+        n_classified += 1
+        matched.add(key)
+        if (
+            tc_truth in ("Pathogenic", "Likely_pathogenic")
+            and pc in ("Benign", "Likely_benign", "VUS", "NoCall")
+        ) or (
+            tc_truth in ("Benign", "Likely_benign")
+            and pc in ("Pathogenic", "Likely_pathogenic")
+        ):
+            if len(discrepancies) < 10000:
+                discrepancies.append((
+                    chrom, pos, ref, alt, t["gene"], t["review_stars"],
+                    tc_truth, pc, top_csq, rule, ";".join(criteria)
+                ))
 
     n_truth = len(truth)
     n_unmatched = n_truth - len(matched)
@@ -201,29 +269,21 @@ def main():
 
     # ── criterion_firing_rates.csv ──
     fr_path = out_dir / "criterion_firing_rates.csv"
-    all_codes = sorted({c for cnt in criterion_fires.values() for c in cnt} |
-                       {c for cnt in criterion_evaluable.values() for c in cnt})
+    all_codes = sorted({c for cnt in criterion_fires.values() for c in cnt})
     with fr_path.open("w") as f:
         w = csv.writer(f)
-        header = ["criterion"]
-        for tcl in CLASSES:
-            header.extend([f"{tcl}_evaluable", f"{tcl}_fired", f"{tcl}_pct"])
+        header = ["criterion"] + [f"{tcl}_fired" for tcl in CLASSES]
         w.writerow(header)
         for code in all_codes:
-            r = [code]
-            for tcl in CLASSES:
-                ev = criterion_evaluable[tcl].get(code, 0)
-                fi = criterion_fires[tcl].get(code, 0)
-                pct = (fi / ev * 100) if ev else 0
-                r.extend([ev, fi, f"{pct:.1f}"])
-            w.writerow(r)
+            row = [code] + [criterion_fires[tcl].get(code, 0) for tcl in CLASSES]
+            w.writerow(row)
 
     # ── rule_distribution.csv ──
     rd_path = out_dir / "rule_distribution.csv"
     with rd_path.open("w") as f:
         w = csv.writer(f)
-        w.writerow(["rule", "n"])
-        for rule, n in rule_dist.most_common():
+        w.writerow(["criteria_signature", "n"])
+        for rule, n in rule_dist.most_common(200):
             w.writerow([rule, n])
 
     # ── discrepancies.tsv ──
@@ -271,11 +331,11 @@ def main():
             f.write(f"Opposite-direction rate: {totals['opp']/totals['n']*100:.1f}%\n")
             f.write(f"NoCall rate:             {totals['nc']/totals['n']*100:.1f}%\n")
 
-        f.write("\nTop 25 triggered rules:\n")
+        f.write("\nTop 25 criteria signatures (sorted criterion code combos):\n")
         for rule, n in rule_dist.most_common(25):
             f.write(f"  {n:>8}  {rule}\n")
 
-        f.write("\nCriterion firing rates (% of variants where the criterion was evaluable AND fired):\n")
+        f.write("\nCriterion fire counts by truth class:\n")
         f.write(f"{'criterion':<22}")
         for tcl in CLASSES:
             f.write(f"  {tcl:>22}")
@@ -283,10 +343,7 @@ def main():
         for code in all_codes:
             f.write(f"{code:<22}")
             for tcl in CLASSES:
-                ev = criterion_evaluable[tcl].get(code, 0)
-                fi = criterion_fires[tcl].get(code, 0)
-                pct = (fi / ev * 100) if ev else 0
-                f.write(f"  {fi:>6}/{ev:>6} ({pct:>5.1f}%)")
+                f.write(f"  {criterion_fires[tcl].get(code, 0):>22}")
             f.write("\n")
 
     print("\nOutputs:")

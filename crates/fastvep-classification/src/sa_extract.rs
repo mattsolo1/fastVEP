@@ -408,7 +408,10 @@ pub fn extract_classification_input(
             "revel" => {
                 revel = serde_json::from_str(json_str).ok();
             }
-            "spliceai" | "spliceAi" | "splice_ai" => {
+            // SpliceAI ships under several capitalisations across builders
+            // (`spliceAI` from the SaWriter pipeline, `spliceai` lowercased,
+            // `splice_ai` snake_case). All three resolve to the same struct.
+            "spliceai" | "spliceAi" | "spliceAI" | "splice_ai" => {
                 splice_ai = serde_json::from_str(json_str).ok();
             }
             "dbnsfp" => {
@@ -418,16 +421,38 @@ pub fn extract_classification_input(
         }
     }
 
-    // Parse positional supplementary annotations (PhyloP, GERP)
+    // Parse positional supplementary annotations (PhyloP, GERP). The CLI
+    // pipeline attaches positional SAs into `aa.supplementary` (allele-level)
+    // alongside the per-allele SAs above, so we look in both places —
+    // whichever fires first wins and the other becomes a no-op.
     let mut phylop = None;
     let mut gerp = None;
+    for (key, json_str) in allele_supplementary {
+        match key.as_str() {
+            "phylop" | "phyloP" => {
+                if phylop.is_none() {
+                    phylop = json_str.trim_matches('"').parse::<f64>().ok();
+                }
+            }
+            "gerp" | "GERP" => {
+                if gerp.is_none() {
+                    gerp = json_str.trim_matches('"').parse::<f64>().ok();
+                }
+            }
+            _ => {}
+        }
+    }
     for sa in variant_supplementary {
         match sa.json_key.as_str() {
             "phylop" | "phyloP" => {
-                phylop = sa.json_string.trim_matches('"').parse::<f64>().ok();
+                if phylop.is_none() {
+                    phylop = sa.json_string.trim_matches('"').parse::<f64>().ok();
+                }
             }
             "gerp" | "GERP" => {
-                gerp = sa.json_string.trim_matches('"').parse::<f64>().ok();
+                if gerp.is_none() {
+                    gerp = sa.json_string.trim_matches('"').parse::<f64>().ok();
+                }
             }
             _ => {}
         }

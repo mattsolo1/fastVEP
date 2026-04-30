@@ -1,6 +1,20 @@
-//! OMIM genemap2.txt parser for building .oga gene annotation files.
+//! Disease-gene annotation parser for building .oga files.
 //!
-//! Extracts gene-phenotype mappings, MIM numbers, and inheritance patterns.
+//! Reads OMIM `genemap2.txt` layout (13-column TSV): gene symbol,
+//! identifier, and a semicolon-separated phenotype list. Two real-world
+//! inputs use this layout:
+//!
+//! - **ClinGen Gene-Disease Validity (GDV)** — the SVI-preferred source
+//!   (Abou Tayoun 2018; Strehlow et al. 2024). A multi-curator scored
+//!   rubric with explicit Definitive/Strong/Moderate classifications.
+//!   Convert from the public CSV with `clingen_gdv_to_oga.py`.
+//! - **OMIM `genemap2.txt`** — the legacy source (registration-gated at
+//!   omim.org). Supported for back-compat; ClinGen GDV is preferred.
+//!
+//! Both populate the same `omim` json_key. The fastvep PVS1 evaluator
+//! consults this data via `OmimData::has_recessive_inheritance()` /
+//! `has_dominant_inheritance()` and as a disease-gene fallback when
+//! gnomAD constraints don't cross the LOF threshold.
 
 use crate::common::GeneRecord;
 use anyhow::{Context, Result};
