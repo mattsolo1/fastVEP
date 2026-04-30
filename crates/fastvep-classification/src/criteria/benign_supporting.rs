@@ -358,8 +358,35 @@ fn evaluate_bp4(
         details.insert("phylop".into(), serde_json::json!(phylop));
     }
 
-    // Splicing path: SpliceAI ≤ spliceai_benign → BP4 Supporting (Walker 2023).
-    let splice_supporting = if let Some(ref splice) = input.splice_ai {
+    // Splicing path: SpliceAI ≤ spliceai_benign → BP4 Supporting (Walker
+    // 2023). Walker 2023 BP4-splice applies to variants where splice
+    // impact is the question — splice-region, intronic, synonymous,
+    // missense. It does NOT apply to PVS1-territory consequences
+    // (frameshift, stop_gained, start_lost, transcript_ablation, canonical
+    // ±1/±2 splice donor/acceptor): a frameshift with low SpliceAI is
+    // still LOF, not benign. Pre-gate fixed a real false-positive where
+    // BP4 was firing alongside PVS1 on ~5K frameshift Pathogenic
+    // variants in the ClinVar 2-star+ benchmark.
+    let is_pvs1_territory = input.consequences.iter().any(|c| {
+        matches!(
+            c,
+            Consequence::FrameshiftVariant
+                | Consequence::StopGained
+                | Consequence::StartLost
+                | Consequence::TranscriptAblation
+                | Consequence::SpliceDonorVariant
+                | Consequence::SpliceAcceptorVariant
+        )
+    });
+    let splice_supporting = if is_pvs1_territory {
+        details.insert(
+            "splice_skipped_reason".into(),
+            serde_json::json!(
+                "BP4 splice does not apply to PVS1-territory consequences (frameshift / stop_gained / start_lost / transcript_ablation / canonical splice donor or acceptor)"
+            ),
+        );
+        false
+    } else if let Some(ref splice) = input.splice_ai {
         if let Some(max_ds) = splice.max_delta_score() {
             details.insert("spliceai_max_ds".into(), serde_json::json!(max_ds));
             if max_ds <= config.spliceai_benign {

@@ -2,12 +2,12 @@
 """Real-data benchmark figures for the ClinVar 2-star+ evaluation.
 
 Reads outputs from `03_evaluate_concordance.py` (under
-`data/benchmark/output_v5/` by default) and emits 5 PDF/PNG panels
+`data/benchmark/output_v6/` by default) and emits 5 PDF/PNG panels
 under `<output_dir>/figures/`:
 
   fig_concordance_matrix       row-normalised heatmap of truth × predicted
-  fig_recall_by_class          per-class same-direction recall (v4)
-  fig_v1_vs_v5_recall          paired bars showing the lift from loading
+  fig_recall_by_class          per-class same-direction recall (v6)
+  fig_v1_vs_v6_recall          paired bars showing the lift from loading
                                PhyloP+SpliceAI+ClinGen GDV (the v1
                                baseline is hard-coded from the prior run
                                whose results are recorded in METHODS.md;
@@ -18,7 +18,7 @@ under `<output_dir>/figures/`:
                                drove the recall lift
 
 Usage:
-  generate_figures.py                     # uses ../../data/benchmark/output_v5
+  generate_figures.py                     # uses ../../data/benchmark/output_v6
   generate_figures.py <out_dir>
 """
 
@@ -55,7 +55,7 @@ C = {
     "LB": "#3b82f6",
     "B": "#10b981",
     "v1": "#94a3b8",
-    "v4": "#6c7aee",
+    "v6": "#6c7aee",
     "delta_up": "#10b981",
     "delta_down": "#ef4444",
 }
@@ -79,7 +79,7 @@ CLASS_COLOR = {
 # v1 baseline — measured on the same 673,660-variant ClinVar 2-star+ set
 # *before* PhyloP / SpliceAI / ClinGen GDV were loaded and before the
 # SpliceAI-camelCase / PhyloP-routing wiring fixes. Captured here so the
-# v1↔v4 comparison panel doesn't need a re-run of the prior pipeline.
+# v1↔v6 comparison panel doesn't need a re-run of the prior pipeline.
 # Source: METHODS.md "Real-Data Concordance" section as written for v1.
 # ──────────────────────────────────────────────────────────────────────
 V1_RECALL = {
@@ -274,8 +274,8 @@ def fig_recall_by_class(matrix, out_dir: Path, fig_dir: Path):
     print("  fig_recall_by_class")
 
 
-def fig_v1_vs_v5_recall(matrix, fig_dir: Path):
-    """Paired bars of per-class same-direction recall, v1 baseline vs v4."""
+def fig_v1_vs_v6_recall(matrix, fig_dir: Path):
+    """Paired bars of per-class same-direction recall, v1 baseline vs v6."""
     fig, ax = plt.subplots(figsize=(11, 6))
 
     def v4_recall(truth):
@@ -309,9 +309,9 @@ def fig_v1_vs_v5_recall(matrix, fig_dir: Path):
         x + width / 2,
         v4,
         width,
-        color=C["v4"],
+        color=C["v6"],
         alpha=0.95,
-        label="v5: + PhyloP + SpliceAI + ClinGen GDV + indel allele fix (current)",
+        label="v6: + PhyloP + SpliceAI + ClinGen GDV + indel allele fix (current)",
     )
     ax.set_xticks(x)
     ax.set_xticklabels([CLASS_SHORT[c] for c in CLASSES], fontweight="bold", fontsize=14)
@@ -340,9 +340,9 @@ def fig_v1_vs_v5_recall(matrix, fig_dir: Path):
 
     plt.tight_layout()
     for ext in ("png", "pdf"):
-        fig.savefig(fig_dir / f"fig_v1_vs_v5_recall.{ext}", dpi=300, bbox_inches="tight")
+        fig.savefig(fig_dir / f"fig_v1_vs_v6_recall.{ext}", dpi=300, bbox_inches="tight")
     plt.close(fig)
-    print("  fig_v1_vs_v5_recall")
+    print("  fig_v1_vs_v6_recall")
 
 
 def fig_criterion_fires(fires: dict[str, dict[str, int]], fig_dir: Path):
@@ -397,7 +397,7 @@ def fig_bp7_pvs1_delta(fires: dict[str, dict[str, int]], fig_dir: Path):
         v4n = v4_total[k]
         ax.plot([v1n, v4n], [yi, yi], color="#cbd5e1", lw=3, zorder=1)
         ax.scatter([v1n], [yi], color=C["v1"], s=130, zorder=2, label="v1" if yi == 0 else None)
-        ax.scatter([v4n], [yi], color=C["v4"], s=160, zorder=3, label="v4" if yi == 0 else None)
+        ax.scatter([v4n], [yi], color=C["v6"], s=160, zorder=3, label="v6" if yi == 0 else None)
         delta = v4n - v1n
         rate = (v4n / max(v1n, 1)) if v1n else float("inf")
         annot = f"  Δ {delta:+,}" + (f" ({rate:.1f}×)" if v1n else "  (new)")
@@ -409,7 +409,7 @@ def fig_bp7_pvs1_delta(fires: dict[str, dict[str, int]], fig_dir: Path):
     ax.set_xscale("symlog", linthresh=10)
     ax.set_xlabel("Times the criterion fired (log scale)")
     ax.set_title(
-        "Single-criterion lift: v1 (REVEL + gnomAD only) → v4 (full SA stack)",
+        "Single-criterion lift: v1 (REVEL + gnomAD only) → v6 (full SA stack)",
         fontweight="bold",
     )
     ax.grid(axis="x", alpha=0.15)
@@ -422,7 +422,7 @@ def fig_bp7_pvs1_delta(fires: dict[str, dict[str, int]], fig_dir: Path):
     print("  fig_bp7_pvs1_delta")
 
 
-def fig_headline_v1_vs_v5(out_dir: Path, fig_dir: Path):
+def fig_headline_v1_vs_v6(out_dir: Path, fig_dir: Path):
     headline = parse_summary(out_dir)
     fig, ax = plt.subplots(figsize=(10, 5.5))
     metrics = [
@@ -436,12 +436,12 @@ def fig_headline_v1_vs_v5(out_dir: Path, fig_dir: Path):
     v1 = [V1_HEADLINE[k] for _, k in metrics]
     v4 = [headline.get(k, 0.0) for _, k in metrics]
     ax.bar(x - width / 2, v1, width, color=C["v1"], alpha=0.9, label="v1")
-    ax.bar(x + width / 2, v4, width, color=C["v4"], alpha=0.95, label="v5")
+    ax.bar(x + width / 2, v4, width, color=C["v6"], alpha=0.95, label="v6")
 
     ax.set_xticks(x)
     ax.set_xticklabels([lab for lab, _ in metrics], fontsize=13, fontweight="bold")
     ax.set_ylabel("%")
-    ax.set_title("Headline concordance metrics: v1 vs v5", fontweight="bold")
+    ax.set_title("Headline concordance metrics: v1 vs v6", fontweight="bold")
     ax.legend()
     ax.grid(axis="y", alpha=0.15)
 
@@ -451,16 +451,16 @@ def fig_headline_v1_vs_v5(out_dir: Path, fig_dir: Path):
 
     plt.tight_layout()
     for ext in ("png", "pdf"):
-        fig.savefig(fig_dir / f"fig_headline_v1_vs_v5.{ext}", dpi=300, bbox_inches="tight")
+        fig.savefig(fig_dir / f"fig_headline_v1_vs_v6.{ext}", dpi=300, bbox_inches="tight")
     plt.close(fig)
-    print("  fig_headline_v1_vs_v5")
+    print("  fig_headline_v1_vs_v6")
 
 
 def main():
     if len(sys.argv) > 1:
         out_dir = Path(sys.argv[1])
     else:
-        out_dir = Path(__file__).resolve().parents[3] / "data/benchmark/output_v5"
+        out_dir = Path(__file__).resolve().parents[3] / "data/benchmark/output_v6"
     fig_dir = out_dir / "figures"
     fig_dir.mkdir(parents=True, exist_ok=True)
 
@@ -471,8 +471,8 @@ def main():
     print("Generating figures...")
     fig_concordance_matrix(matrix, out_dir, fig_dir)
     fig_recall_by_class(matrix, out_dir, fig_dir)
-    fig_v1_vs_v5_recall(matrix, fig_dir)
-    fig_headline_v1_vs_v5(out_dir, fig_dir)
+    fig_v1_vs_v6_recall(matrix, fig_dir)
+    fig_headline_v1_vs_v6(out_dir, fig_dir)
     fig_criterion_fires(fires, fig_dir)
     fig_bp7_pvs1_delta(fires, fig_dir)
 

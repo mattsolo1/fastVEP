@@ -119,6 +119,19 @@ pub struct AcmgConfig {
     /// Downgrade PM2 from Moderate to Supporting (ClinGen SVI recommendation)
     #[serde(default = "default_true")]
     pub pm2_downgrade_to_supporting: bool,
+    /// When `input.gnomad` is `None` (no gnomAD record at all for the
+    /// variant), treat the variant as absent from gnomAD and fire PM2.
+    /// Per ClinGen SVI v1.0, "absent or extremely rare in population
+    /// databases" is the PM2 trigger; if a variant is not in the loaded
+    /// gnomAD `.osa`, the natural interpretation is that gnomAD never
+    /// observed it (i.e. it IS absent). Default `true`.
+    ///
+    /// Set `false` to keep the strict-coverage stance (PM2 NotEvaluated
+    /// when no record present) — useful when gnomAD data was loaded for
+    /// only a subset of input regions and you want PM2 silenced outside
+    /// that coverage.
+    #[serde(default = "default_true")]
+    pub pm2_absent_when_no_record: bool,
     /// Enable PP5/BP6 criteria (disabled by default per ClinGen SVI)
     #[serde(default)]
     pub use_pp5_bp6: bool,
@@ -227,6 +240,7 @@ impl Default for AcmgConfig {
             pm1_hotspot_window: 5,
             pm1_hotspot_min_pathogenic: 3,
             pm2_downgrade_to_supporting: true,
+            pm2_absent_when_no_record: true,
             use_pp5_bp6: false,
             ba1_exceptions: default_ba1_exceptions(),
             use_clinvar_stars_as_ps4_proxy: false,

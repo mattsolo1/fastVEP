@@ -304,31 +304,32 @@ Generate by running:
 python3 analysis/acmg_benchmark/real_data/generate_figures.py
 ```
 
-Outputs (`data/benchmark/output_v5/figures/`, PNG + PDF):
+Outputs (`data/benchmark/output_v6/figures/`, PNG + PDF):
 
 | File | Content |
 |------|---------|
 | `fig_concordance_matrix` | row-normalised truth × predicted heatmap |
 | `fig_recall_by_class` | per-class outcome breakdown (same / off / NoCall / opposite) |
-| `fig_v1_vs_v5_recall` | per-class same-direction recall, v1 baseline vs v5 |
-| `fig_headline_v1_vs_v5` | headline metrics (exact / same-dir / opposite / NoCall) v1 vs v5 |
+| `fig_v1_vs_v6_recall` | per-class same-direction recall, v1 baseline vs v6 |
+| `fig_headline_v1_vs_v6` | headline metrics (exact / same-dir / opposite / NoCall) v1 vs v6 |
 | `fig_criterion_fires` | top-18 criteria by total fire count, stacked by truth class |
-| `fig_bp7_pvs1_delta` | single-criterion lift v1 → v4 for BP7, PVS1, PS1, BS2, BA1 |
+| `fig_bp7_pvs1_delta` | single-criterion lift v1 → v6 for BP7, PVS1, PS1, BS2, BA1 |
 
-### Run-to-run differences (v1 → v5)
+### Run-to-run differences (v1 → v6)
 
 The benchmark was run end-to-end multiple times during the SVI alignment
 + SA-source build. Each delta maps cleanly onto a specific data or code
 change:
 
-| Run | What was loaded / fixed | Same-dir | LB | B | BP7 | PVS1 | NoCall |
-|-----|--------------------------|---------:|---:|---:|----:|-----:|-------:|
-| **v1** | Per-chrom gnomAD v4 + REVEL + ClinVar + ClinVar-protein .oga + gnomAD genes .oga | 54.7 % | 3.2 % | 33.2 % | 0 | 5,636 | 0.0 % |
-| v2 | + PhyloP + SpliceAI .osa per chrom + ClinGen GDV .oga (loaded but with two latent wiring bugs) | 54.9 % | 3.3 % | 33.3 % | ≈0 | 23,703 | 0.0 % |
-| v4 | v2 data + two wiring fixes: SpliceAI `spliceAI` ↔ `spliceai`/`spliceAi` json_key alignment in `sa_extract.rs`; PhyloP read from `allele_supplementary` not just `variant_supplementary`; output switched from JSON to bgzipped VCF (~360× smaller) | 63.7 % | 42.4 % | 58.0 % | 81,688 | 27,460 | 6.8 % |
-| **v5** | v4 + indel allele-matching fix in concordance script: VCF ALT (e.g. `CT`) doesn't match VEP CSQ Allele convention (`T` for the inserted base, `-` for a deletion). Without normalisation, all 48,539 indels in the truth fell into NoCall. Added `vep_allele(ref, alt)` to strip the leading common prefix. | **65.1 %** | **42.4 %** | **58.0 %** | **81,688** | **52,289** | **0.0 %** |
+| Run | What was loaded / fixed | Same-dir | P | LP | LB | B | PVS1 | PM2 |
+|-----|--------------------------|---------:|--:|--:|--:|--:|----:|----:|
+| **v1** | Per-chrom gnomAD v4 + REVEL + ClinVar + ClinVar-protein .oga + gnomAD genes .oga | 54.7 % | 16 % | 21 % | 3 % | 33 % | 5,636 | ≈12K |
+| v2 | + PhyloP + SpliceAI .osa per chrom + ClinGen GDV .oga (loaded but with two latent wiring bugs) | 54.9 % | 16 % | 21 % | 3 % | 33 % | 23,703 | ≈12K |
+| v4 | v2 data + two wiring fixes: SpliceAI `spliceAI` ↔ `spliceai`/`spliceAi` json_key alignment in `sa_extract.rs`; PhyloP read from `allele_supplementary` not just `variant_supplementary`; output switched from JSON to bgzipped VCF (~360× smaller) | 63.7 % | 17 % | 26 % | 42 % | 58 % | 27,460 | ≈12K |
+| v5 | v4 + indel allele-matching fix in concordance script: VCF ALT (e.g. `CT`) doesn't match VEP CSQ Allele convention (`T`, `-`). Added `vep_allele(ref, alt)` to strip the leading common prefix. | 65.1 % | 21 % | 27 % | 42 % | 58 % | 52,289 | ≈12K |
+| **v6** | v5 + **PM2 fires when variant is absent from gnomAD** (`pm2_absent_when_no_record = true`, default; ClinGen SVI v1.0). + **BP4-splice gated to non-PVS1 consequences** (Walker 2023) — frameshift / stop_gained / canonical splice no longer get BP4 from low SpliceAI. | **70.3 %** | **64 %** | **52 %** | 42 % | 58 % | **50,062** | **340K** |
 
-Diagnosis of the v1 → v4 lift:
+Diagnosis of the lifts:
 
 1. **PhyloP + SpliceAI loaded but invisible (v2 → v4 fix)**. The
    SaWriter wrote SpliceAI under json_key `spliceAI` (capital AI), the
@@ -363,7 +364,34 @@ Diagnosis of the v1 → v4 lift:
    (27K → 52K) because frameshift indels are PVS1's most common
    trigger.
 
-4. **Output format change** (v1–v3 JSON → v4+ VCF.gz). Pretty-printed
+4. **Pathogenic recall jumped 21 % → 64 % (v5 → v6 fix)**. PM2's
+   evaluator previously returned `evaluated=false` whenever
+   `input.gnomad` was `None` — i.e. whenever the loaded gnomAD `.osa`
+   had no record for the variant. For ~78 % of pathogenic ClinVar 2★+
+   variants — most rare disease variants are simply absent from
+   gnomAD — that meant PM2 NotEvaluated, so PVS1 had no partner
+   criterion and the PVS+≥1 PP (SVI Sept 2020) → LP rule couldn't
+   trigger. Default config flag `pm2_absent_when_no_record = true`
+   now interprets a missing record as "absent from gnomAD" per
+   ClinGen SVI v1.0 ("absent or extremely rare in population
+   databases"). PM2_Supporting fires went from ~12K → 340K, unlocking
+   the LP rule for ~50K Pathogenic and ~4K LP variants. Configurable
+   off (`pm2_absent_when_no_record = false`) for partial-coverage
+   runs where the gnomAD `.osa` covers only some input regions.
+
+5. **BP4-splice no longer fires on PVS1-territory consequences (v6
+   fix)**. Walker 2023's BP4-splice (SpliceAI ≤ 0.1 → Supporting
+   benign) applies to variants where splice impact is the question —
+   splice-region, intronic, synonymous, missense. It was firing on
+   frameshift / stop_gained / start_lost / transcript_ablation /
+   canonical splice donor/acceptor variants because their SpliceAI
+   max_ds is typically low (SpliceAI doesn't know how to score a
+   frameshift). The result was BP4+PVS1 simultaneous fires on ~5K
+   pathogenic frameshifts, which the conflict-gating logic couldn't
+   resolve. The fix gates BP4-splice to non-null consequences;
+   PVS1-territory variants now reach LP cleanly.
+
+6. **Output format change** (v1–v3 JSON → v4+ VCF.gz). Pretty-printed
    JSON for the full benchmark is ~25 GB; the bgzipped VCF carrying
    the same ACMG fields in CSQ INFO is ~70 MB (~360× smaller). The
    concordance script was rewritten to stream the VCF.gz directly. Tab
@@ -374,36 +402,39 @@ Diagnosis of the v1 → v4 lift:
 
 Truth records: **673,660** · Classified: **673,659** · Truth-not-annotated: **1** (a single intergenic variant whose `--pick` transcript had no ACMG annotation).
 
-#### Truth × predicted matrix
+#### Truth × predicted matrix (v6)
 
 | Truth ↓ / Predicted → | P | LP | VUS | LB | B | NoCall |
 |--|--:|--:|--:|--:|--:|--:|
-| Pathogenic (n=79,823) | 185 | 16,267 | 63,034 | 327 | 9 | 1 |
-| Likely Pathogenic (n=13,989) | 15 | 3,722 | 10,208 | 44 | 0 | 0 |
-| VUS (n=295,298) | 1 | 208 | 273,340 | 18,474 | 3,275 | 0 |
-| Likely Benign (n=128,038) | 0 | 3 | 73,787 | 50,698 | 3,550 | 0 |
-| Benign (n=156,512) | 0 | 6 | 65,765 | 41,745 | 48,996 | 0 |
+| Pathogenic (n=79,823) | **6,450** | 44,506 | 28,676 | 181 | 9 | 1 |
+| Likely Pathogenic (n=13,989) | 670 | **6,574** | 6,711 | 34 | 0 | 0 |
+| VUS (n=295,298) | 73 | 3,237 | **270,264** | 18,449 | 3,275 | 0 |
+| Likely Benign (n=128,038) | 2 | 55 | 73,742 | **50,689** | 3,550 | 0 |
+| Benign (n=156,512) | 5 | 59 | 65,730 | 41,722 | **48,996** | 0 |
+
+(Diagonal = exact-match. Same-direction lumps P+LP for P/LP truth and
+LB+B for LB/B truth.)
 
 #### Headline metrics
 
 | Metric | Value |
 |--------|------:|
-| Exact-match (truth = predicted) | **56.0 %** |
-| Same-direction (truth & predicted both P-tier or both B-tier or both VUS) | **65.1 %** |
-| Opposite-direction (P/LP truth → B/LB predicted, or vice versa) | **389 / 673,660 = 0.06 %** |
+| Exact-match (truth = predicted) | **56.8 %** |
+| Same-direction (truth & predicted both P-tier or both B-tier or both VUS) | **70.3 %** |
+| Opposite-direction (P/LP truth → B/LB predicted, or vice versa) | **345 / 673,660 = 0.05 %** |
 | NoCall after annotation | 0.0 % |
 
 Per-class same-direction recall:
 
 | Truth class | Same-dir count | Recall |
 |-------------|---------------:|------:|
-| Pathogenic | 16,452 / 79,823 | **20.6 %** |
-| Likely Pathogenic | 3,737 / 13,989 | **26.7 %** |
-| VUS | 273,340 / 295,298 | **92.6 %** |
-| Likely Benign | 54,248 / 128,038 | **42.4 %** |
-| Benign | 90,741 / 156,512 | **58.0 %** |
+| Pathogenic | 50,956 / 79,823 | **63.8 %** |
+| Likely Pathogenic | 7,244 / 13,989 | **51.8 %** |
+| VUS | 270,264 / 295,298 | **91.5 %** |
+| Likely Benign | 54,239 / 128,038 | **42.4 %** |
+| Benign | 90,718 / 156,512 | **58.0 %** |
 
-#### Most-triggered criterion signatures
+#### Most-triggered criterion signatures (v6)
 
 The VCF output records the set of criteria met but not the named
 combination rule (the rule is reconstructed offline). Top signatures by
@@ -411,17 +442,20 @@ sorted criterion code combination:
 
 | Signature | Count |
 |-----------|------:|
-| BP4 alone | 162,973 |
-| (no criteria met) | 73,925 |
-| BP4_Moderate alone | 57,899 |
-| BP4 + BP7 | 53,197 |
-| BA1 + BP4 + BS2 | 28,220 |
-| BP4 + BS2 | 24,180 |
-| BP4 + PP2 | 18,767 |
-| PVS1 alone | 18,302 |
+| BP4 alone | 86,837 |
+| **PM2_Supporting alone** | 79,492 |
+| **BP4 + PM2_Supporting** | 78,359 |
+| **PM2_Supporting + PVS1** | 40,244 |
+| BP4_Moderate alone | 31,733 |
+| BP4 + BP7 | 31,628 |
+| BA1 + BP4 + BS2 | 28,207 |
+| BP4_Moderate + PM2_Supporting | 27,171 |
+| BP4 + BS2 | 24,128 |
+| BP4 + BP7 + PM2_Supporting | 22,394 |
+| (no criteria met) | 12,760 |
 | BP4 + BP7 + BS2 | 11,829 |
-| PP3 alone | 11,115 |
-| PM1 + PM5 + PS1 | 3,356 |
+| PVS1 alone | 6,726 |
+| PM2_Supporting + PP3 | 6,156 |
 
 Per-criterion fire counts (Pathogenic / LP / VUS / LB / Benign):
 
@@ -431,7 +465,7 @@ Per-criterion fire counts (Pathogenic / LP / VUS / LB / Benign):
 | **PVS1_Supporting** | 287 | 31 | 114 | 0 | 5 |
 | PS1 | 14,438 | 4,770 | 68 | 1 | 1 |
 | PM1 | 15,636 | 3,508 | 9,226 | 4,791 | 2,663 |
-| PM2_Supporting | 2,261 | 444 | 6,427 | 1,964 | 755 |
+| **PM2_Supporting** | **64,538** | **10,855** | **143,654** | **57,466** | **63,008** |
 | PM4 | 623 | 231 | 3,402 | 226 | 575 |
 | PM5 | 8,284 | 2,387 | 3,293 | 39 | 83 |
 | PP3_Strong | 65 | 8 | 4,141 | 19 | 31 |
@@ -439,31 +473,36 @@ Per-criterion fire counts (Pathogenic / LP / VUS / LB / Benign):
 | BS1 | 3 | 0 | 18 | 1,317 | 2,766 |
 | BS2 | 809 | 104 | 10,097 | 14,611 | 75,813 |
 | **BP7** | 19 | 6 | 457 | 47,488 | 33,718 |
-| BP4 | 17,163 | 2,501 | 154,123 | 90,974 | 108,069 |
+| BP4 | 9,733 | 2,212 | 153,415 | 90,941 | 108,005 |
 | BP4_Moderate | 118 | 49 | 72,394 | 4,173 | 13,765 |
 | BP4_Strong | 1 | 0 | 2,756 | 216 | 903 |
 | BP4_Very_Strong | 0 | 0 | 110 | 11 | 54 |
 
-### Interpretation
+(Note BP4 P fires dropped from 17,163 → 9,733: the v6 BP4-splice gate
+no longer fires on null variants. BP4 LB / B counts are essentially
+unchanged because those classes are dominated by missense-REVEL and
+non-PVS1 splice variants that the gate doesn't affect.)
 
-- **Likely_benign recall jumped from 3 % → 42 %** between v1 and v5.
-  The driver is BP7 firing 81,206 times (47K LB + 34K B) on synonymous
-  / deep-intronic variants once SpliceAI and PhyloP data were loaded —
-  exactly the Walker 2023 calibration combining SpliceAI ≤ 0.2 and
-  PhyloP < 2.0.
-- **PVS1 firing ~9× higher** (5K → 50K Pathogenic+LP). Two
-  contributors: ClinGen GDV providing the disease-gene fallback, and
-  the v5 indel-allele-matching fix that previously hid every
-  frameshift/stop-gained-with-shifted-bases variant inside NoCall.
-  The remaining P/LP gap is driven by criteria that need
-  manual-curation evidence (PS3 functional, PP1 segregation, PP4
-  phenotype-specific) — those are NotEvaluated by design.
-- **Opposite-direction rate is 0.06 %** (389 / 673,660): when the
-  classifier commits to a directional call it agrees with the curated
-  review-panel call ~99.94 % of the time. Per-variant discrepancies
-  are in `data/benchmark/output_v5/discrepancies.tsv` for
-  case-by-case review.
-- **NoCall is 0.0 %** in v5 (after the indel-allele-matching fix).
+### Interpretation (v6)
+
+- **Pathogenic recall 16 % → 64 %** between v1 and v6 (4× lift). The
+  dominant driver is the v6 PM2-absent fix: PM2_Supporting fires
+  340,521 times in v6 vs ~12K previously, so the PVS+≥1 PP (SVI
+  Sept 2020) → LP rule now triggers for the bulk of pathogenic null
+  variants. Secondary contributor: ClinGen GDV's disease-gene
+  fallback for PVS1.
+- **Likely_benign recall jumped from 3 % → 42 %** between v1 and
+  v4. Driver was BP7 firing 81,206 times (47K LB + 34K B) on
+  synonymous / deep-intronic variants once PhyloP and SpliceAI were
+  loaded *and* both wiring bugs were fixed. v5/v6 didn't change LB
+  numbers since BP7 already fires on the synonymous variants where
+  it can.
+- **Opposite-direction rate is 0.05 %** (345 / 673,660): when the
+  classifier commits to a directional call it agrees with the
+  curated review-panel call ~99.95 % of the time. Per-variant
+  discrepancies are in `data/benchmark/output_v6/discrepancies.tsv`
+  for case-by-case review.
+- **NoCall is 0.0 %** in v5+ (after the indel-allele-matching fix).
   Earlier runs reported 6.8 % NoCall, but this was an artefact of the
   concordance script comparing raw VCF ALT (`CT`) against the VEP CSQ
   Allele convention (`T` for an inserted base, `-` for a deletion);

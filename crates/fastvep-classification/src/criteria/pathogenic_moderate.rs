@@ -229,19 +229,36 @@ fn evaluate_pm2(
                 ),
             }
         }
+    } else if config.pm2_absent_when_no_record {
+        // No gnomAD record at the variant. ClinGen SVI v1.0: "absent or
+        // extremely rare in population databases". The natural reading of
+        // a missing record is that gnomAD has never observed the variant,
+        // i.e. it IS absent. Fire PM2 (downgraded to Supporting per SVI).
+        //
+        // Configurable via `pm2_absent_when_no_record` (default true).
+        // Set false for partial-coverage runs where gnomAD .osa covers
+        // only some input regions and you want PM2 silenced outside that
+        // coverage. Note that when `--sa-dir` includes no gnomAD .osa at
+        // all, `input.gnomad` is None for every variant — disable this
+        // flag in that case (or load gnomAD) to avoid firing PM2 globally.
+        details.insert("gnomad_allAf".into(), serde_json::Value::Null);
+        details.insert("pm2_absent_when_no_record".into(), serde_json::json!(true));
+        (
+            true,
+            true,
+            format!(
+                "Absent in gnomAD: no record at this position/allele (inheritance={}, treating as absent per pm2_absent_when_no_record)",
+                inheritance_basis
+            ),
+        )
     } else {
-        // No gnomAD annotation at all. We cannot distinguish "this variant is
-        // truly absent from gnomAD" (PM2 would fire) from "the gnomAD database
-        // wasn't loaded for this run / this region" (PM2 cannot be evaluated).
-        // Without an explicit positive assertion of coverage, mark PM2
-        // NotEvaluated rather than firing — pre-fix the classifier called PM2
-        // on every variant when gnomAD wasn't loaded, which inflated the
-        // pathogenic-direction call across the board.
+        // Strict-coverage stance: cannot distinguish "absent from gnomAD"
+        // from "gnomAD .osa not loaded for this region". Mark NotEvaluated.
         details.insert("gnomad_allAf".into(), serde_json::Value::Null);
         (
             false,
             false,
-            "PM2 not evaluated: no gnomAD annotation present (cannot distinguish 'absent from gnomAD' from 'gnomAD database not loaded'). Load a gnomAD .osa to enable PM2.".to_string(),
+            "PM2 not evaluated: no gnomAD annotation present (pm2_absent_when_no_record disabled).".to_string(),
         )
     };
 
@@ -788,14 +805,27 @@ mod tests {
     }
 
     #[test]
-    fn test_pm2_no_gnomad_data_not_evaluated() {
-        // When the pipeline has no gnomAD annotation at all, PM2 cannot be
-        // safely fired — we can't distinguish "truly absent from gnomAD"
-        // from "gnomAD database not loaded." Older behavior fired PM2 here
-        // and inflated the pathogenic call for variants in regions/runs
-        // without gnomAD coverage.
+    fn test_pm2_no_gnomad_record_treated_as_absent_by_default() {
+        // Default config has `pm2_absent_when_no_record = true`: a missing
+        // gnomAD record is interpreted as "variant is absent from gnomAD"
+        // per ClinGen SVI v1.0 (PM2 = absent or extremely rare). PM2 fires.
         let input = make_input(vec![Consequence::MissenseVariant], None);
         let result = evaluate_pm2(&input, &AcmgConfig::default());
+        assert!(result.met);
+        assert!(result.evaluated);
+        assert!(result.summary.contains("Absent in gnomAD"));
+    }
+
+    #[test]
+    fn test_pm2_no_gnomad_record_not_evaluated_when_strict() {
+        // Setting `pm2_absent_when_no_record = false` reverts to the
+        // strict-coverage stance: PM2 NotEvaluated when no record present.
+        // Use this when the loaded gnomAD .osa covers only some input
+        // regions and you want PM2 silenced outside that coverage.
+        let mut cfg = AcmgConfig::default();
+        cfg.pm2_absent_when_no_record = false;
+        let input = make_input(vec![Consequence::MissenseVariant], None);
+        let result = evaluate_pm2(&input, &cfg);
         assert!(!result.met);
         assert!(!result.evaluated);
         assert!(result.summary.contains("not evaluated"));
