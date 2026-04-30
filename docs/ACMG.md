@@ -156,11 +156,11 @@ ACMG classification draws on multiple supplementary annotation (SA) sources. Pla
 
 | Source | SA Key | Used By | Description |
 |---|---|---|---|
-| **gnomAD** | `gnomad` | BA1, BS1, BS2, PM2 | Population allele frequencies + homozygote counts |
-| **ClinVar** | `clinvar` | PS4, PP5, BP6 | Clinical significance, review status, phenotypes |
-| **REVEL** | `revel` | PP3, BP4 | Missense pathogenicity score (0-1) |
-| **SpliceAI** | `spliceai` | PP3, BP7 | Splice site delta scores |
-| **dbNSFP** | `dbnsfp` | PP3, BP4 | SIFT/PolyPhen predictions |
+| **gnomAD** | `gnomad` | BA1, BS1, BS2, PM2 | Per-population allele frequencies + AN + homozygote counts (BA1/BS1 max-pop AF; BA1/BS1 require AN ≥ 2,000) |
+| **ClinVar** | `clinvar` | PP5, BP6 (off by default per SVI); PS4 only when `use_clinvar_stars_as_ps4_proxy = true` | Clinical significance, review status, phenotypes; companion-variant lookups for PM3 / BP2 |
+| **REVEL** | `revel` | PP3 (missense), BP4 (missense, including Very Strong band ≤ 0.003) | Missense pathogenicity score (0-1); not applied to non-missense per Pejaver 2022 |
+| **SpliceAI** | `spliceai` | PP3 (caps at Supporting per Walker 2023), BP4 (≤ 0.1 → Supporting), BP7 | Splice site delta scores |
+| **dbNSFP** | `dbnsfp` | Transparency-only (SIFT / PolyPhen surfaced in `details`) | The pre-PR1 ≥3-of-4 consensus path was removed per Pejaver 2022. |
 | **1000 Genomes** | `onekg` | PM2 (supplement) | Population frequencies |
 | **TOPMed** | `topmed` | PM2 (supplement) | Population frequencies |
 
@@ -202,41 +202,41 @@ When a `.oga` is missing, dependent criteria (PVS1, PS1, PM1, PM5, PM3, BP1, BP2
 
 | Code | Strength | Description | Data Source | Automatable |
 |---|---|---|---|---|
-| **PVS1** | Very Strong | Null variant in LOF-intolerant gene | Consequence + pLI/LOEUF/OMIM | Yes |
-| **PS1** | Strong | Same AA change as established pathogenic | ClinVar protein index | Yes (with .oga) |
+| **PVS1** | Very Strong → Supporting* | Null variant in LOF-intolerant gene; graded per Abou Tayoun 2018 decision tree (NMD prediction, %protein removed, critical region, alt start codon, last exon) | Consequence + pLI/LOEUF/OMIM/ClinGen GDV + transcript context | Yes |
+| **PS1** | Strong | Same AA change as established pathogenic missense **or** canonical ±1/2 splice predicted to produce same RNA outcome (Walker 2023) | ClinVar protein index + splice catalog | Yes (with .oga) |
 | **PS2** | Strong | De novo with confirmed parents | Trio VCF genotypes | Yes (with trio) |
 | **PS3** | Strong | Functional studies show damaging | External data | No |
-| **PS4** | Strong | Prevalence in affected >> controls | ClinVar expert panel | Partial |
+| **PS4** | Strong | Prevalence in affected >> controls | Case-control statistics (NotEvaluated by default; ClinVar review-stars proxy is invalid per SVI, opt in via `use_clinvar_stars_as_ps4_proxy`) | No (Partial in proxy mode) |
 | **PM1** | Moderate | Mutational hotspot / critical domain | ClinVar protein density | Yes (with .oga) |
-| **PM2** | Supporting* | Absent/rare in population databases | gnomAD AF | Yes |
-| **PM3** | Moderate | In trans with pathogenic (recessive) | Phased VCF + ClinVar | Yes (with trio) |
+| **PM2** | Supporting* | Absent/rare in population databases — inheritance-aware: AD/unknown requires strict absence (AC=0); AR fires at AF ≤ 0.00007 (SVI v1.0) | gnomAD AF + OMIM inheritance | Yes |
+| **PM3** | Supporting → Very Strong* | In trans with pathogenic (recessive); points-based per SVI v1.0 (in-trans/P=1.0pt, in-trans/LP=0.5pt, unphased/P=0.5pt, unphased/LP=0.25pt, hom=0.5pt cap 1.0) | Phased VCF + ClinVar | Yes (with trio) |
 | **PM4** | Moderate | Protein length change (in-frame/stop-loss) | Consequence type | Yes |
 | **PM5** | Moderate | Different pathogenic missense at same residue | ClinVar protein index | Yes (with .oga) |
 | **PM6** | Moderate | Assumed de novo (partial confirmation) | Partial trio VCF | Yes (with trio) |
 | **PP1** | Supporting | Co-segregation in family | Pedigree data | No |
 | **PP2** | Supporting | Missense in constrained gene | Gene misZ score | Yes |
-| **PP3** | Supporting-Strong | Computational evidence (deleterious) | REVEL (missense, Pejaver 2022 calibrated) + SpliceAI (caps at Supporting per Walker 2023) | Yes |
+| **PP3** | Supporting-Strong | Computational evidence (deleterious) — REVEL **missense-only** (Pejaver 2022) + SpliceAI ≥ 0.2 caps at Supporting (Walker 2023). Ensemble SIFT/PolyPhen/PhyloP/GERP consensus path removed (Pejaver 2022 endorses single calibrated tool only). | REVEL + SpliceAI | Yes |
 | **PP4** | Supporting | Phenotype-specific for single-gene disease | HPO phenotype data | No |
 | **PP5** | Supporting | Reputable source reports pathogenic | ClinVar (disabled by default per SVI) | Partial |
 
-*\*PM2 is downgraded from Moderate to Supporting per ClinGen SVI recommendation.*
+*\*PM2 is downgraded from Moderate to Supporting per ClinGen SVI recommendation. PVS1 and PM3 are escalated/de-escalated by graded subcodes (e.g. `PVS1_Strong`, `PM3_Supporting`).*
 
 ### Benign Criteria
 
 | Code | Strength | Description | Data Source | Automatable |
 |---|---|---|---|---|
-| **BA1** | Standalone | AF > 5% in any population | gnomAD population AFs | Yes |
-| **BS1** | Strong | AF > expected for disorder | gnomAD global AF | Yes |
-| **BS2** | Strong | Observed in healthy adult | gnomAD hom count + OMIM inheritance | Yes |
+| **BA1** | Standalone | AF > 5% in any population, AN ≥ 2,000 (gnomAD v4 SVI March 2024); 9-variant Ghosh 2018 exception list (HFE c.845G>A, MEFV common, BTD c.1330G>C, etc.) blocks BA1 regardless of AF | gnomAD population AFs + AN + HGVSc | Yes |
+| **BS1** | Strong | Max-population AF > expected (mirrors BA1 max-pop logic per SVI; pre-fix used cohort-wide AF and missed population-specific commons) | gnomAD per-population AFs | Yes |
+| **BS2** | Strong | Observed in healthy adult — AD/X-linked-D requires AC ≥ 5 (`bs2_ad_min_ac`, ClinGen VCEP convention); AR requires ≥1 homozygote | gnomAD hom count + OMIM inheritance | Yes |
 | **BS3** | Strong | Functional studies show no damage | External data | No |
 | **BS4** | Strong | Lack of segregation | Pedigree data | No |
 | **BP1** | Supporting | Missense in LOF-only gene | pLI + misZ | Yes |
 | **BP2** | Supporting | In trans/cis with pathogenic | Phased VCF + ClinVar | Yes (with trio) |
 | **BP3** | Supporting | In-frame indel in repeat region | Consequence + RepeatMasker | Yes (with .osi) |
-| **BP4** | Supporting-Very Strong | Computational evidence (benign) | REVEL (missense, Pejaver 2022 calibrated; ≤ 0.003 reaches Very Strong) + SpliceAI ≤ 0.1 (Walker 2023) | Yes |
+| **BP4** | Supporting-Very Strong | Computational evidence (benign) — REVEL **missense-only** with Very Strong band at ≤ 0.003 (Pejaver 2022) + SpliceAI ≤ 0.1 → Supporting (Walker 2023). BP4-splice gated to non-PVS1-territory consequences (frameshifts and canonical splice can't claim BP4-splice). | REVEL + SpliceAI | Yes |
 | **BP5** | Supporting | Alternate molecular basis in case | Case-level analysis | No |
 | **BP6** | Supporting | Reputable source reports benign | ClinVar (disabled by default per SVI) | Partial |
-| **BP7** | Supporting | Synonymous + no splice impact + not conserved | Consequence + SpliceAI + PhyloP | Yes |
+| **BP7** | Supporting | Synonymous + no splice impact + not conserved. Per Walker 2023: must NOT fire for synonymous at first base / last 3 bases of an exon (`at_exon_edge`); extends to deep-intronic offsets ≥ 7 (donor) or ≤ -21 (acceptor). | Consequence + SpliceAI + PhyloP + exon position | Yes |
 
 ### PP3/BP4 Strength Elevation (ClinGen SVI Calibrated)
 
@@ -251,6 +251,56 @@ PP3 and BP4 can be elevated beyond Supporting based on REVEL score (Pejaver 2022
 | ≤ 0.183 | — | Moderate |
 | ≤ 0.016 | — | Strong |
 | ≤ 0.003 | — | **Very Strong** |
+
+### PVS1 Strength Grading (Abou Tayoun 2018)
+
+PVS1 is graded by a decision tree over null-variant context. The output code carries the strength suffix (e.g. `PVS1_Moderate`).
+
+| Variant context | PVS1 strength |
+|---|---|
+| Nonsense / frameshift, NMD predicted | **Very Strong** (`PVS1`) |
+| Canonical ±1/2 splice, NMD predicted | **Very Strong** (`PVS1`) |
+| Whole-gene deletion in haploinsufficient gene | **Very Strong** (`PVS1`) |
+| NMD-escape **in critical functional region** | Strong (`PVS1_Strong`) |
+| NMD-escape, non-critical, **≥ 10 % protein removed** | Moderate (`PVS1_Moderate`) |
+| Canonical splice in last exon | Moderate (`PVS1_Moderate`) |
+| Start-loss with downstream Met ≤ 100 codons + pathogenic upstream | Moderate (`PVS1_Moderate`) |
+| NMD-escape, non-critical, < 10 % protein removed | Supporting (`PVS1_Supporting`) |
+| Start-loss with no corroborating evidence | Supporting (`PVS1_Supporting`) |
+
+When the pipeline does not populate the tree signals (`predicted_nmd`, `protein_truncation_pct`, `is_last_exon`, `in_critical_region`, `alt_start_codon_distance`), PVS1 falls back to legacy Very Strong for any null variant in a LOF-intolerant gene. The graded result is exposed in `details` for transparency.
+
+### PM3 Strength Grading (SVI v1.0 Points)
+
+PM3 sums points across compound-het / homozygous observations and maps the total to a strength tier:
+
+| Scenario | Points |
+|---|---|
+| Confirmed in-trans + Pathogenic companion | 1.0 |
+| Confirmed in-trans + Likely Pathogenic companion | 0.5 |
+| Phase unknown + Pathogenic | 0.5 |
+| Phase unknown + Likely Pathogenic | 0.25 |
+| Homozygous occurrence (proband hom-alt) | 0.5 each, capped at 1.0 total |
+
+| Total points | PM3 strength |
+|---|---|
+| ≥ 0.5 | `PM3_Supporting` |
+| ≥ 1.0 | `PM3` (Moderate) |
+| ≥ 2.0 | `PM3_Strong` |
+| ≥ 4.0 | `PM3_Very_Strong` |
+
+In-cis companions are excluded (they count toward BP2 instead). Requires AR inheritance from OMIM.
+
+### Anti-Double-Counting (Reconciliation Pass)
+
+After per-criterion evaluation, a reconciliation pass suppresses computational evidence (PP3) that would double-count molecular signals already captured by other criteria. Suppressed criteria appear with `met: false` and `details.suppressed_by_reconcile` explaining why.
+
+| Trigger | Action | Reference |
+|---|---|---|
+| PVS1 fires + PP3 driven by SpliceAI | Suppress PP3 | Walker 2023 (PVS1 already counts splice signal) |
+| PS1 fires + PP3 driven by REVEL (missense) | Suppress PP3 | Pejaver 2022 (PS1 covers residue) |
+| PM5 fires + PP3 driven by REVEL (missense) | Suppress PP3 | Pejaver 2022 (PM5 covers residue) |
+| PP3 elevated to Strong + PM1 fires | Suppress PM1 (cap combined at Strong = 4 Tavtigian points) | Pejaver 2022 |
 
 ## Classification Combination Rules
 
@@ -301,7 +351,7 @@ When a multi-sample VCF is provided with `--proband`, `--mother`, and `--father`
 
 ### Compound Heterozygote Detection (PM3 / BP2)
 After individual variant classification, a second pass groups variants by gene:
-- **PM3** (Moderate): In a recessive-inheritance gene, proband is heterozygous for two variants, and the companion variant is ClinVar pathogenic. Phase-aware: uses phased genotypes (VCF `|` separator) when available.
+- **PM3** (Supporting → Very Strong): In a recessive-inheritance gene, the proband is het or hom for the variant. Companions in trans / phase-unknown contribute points (1.0 / 0.5 / 0.25 depending on phasing × ClinVar significance), homozygous occurrences add 0.5 (capped at 1.0). Total points ≥ 0.5 / 1.0 / 2.0 / 4.0 map to `PM3_Supporting` / `PM3` / `PM3_Strong` / `PM3_Very_Strong`. Phase-aware: uses phased genotypes (VCF `|` separator) when available.
 - **BP2** (Supporting): Variant is in cis with a ClinVar pathogenic variant, or in trans with pathogenic in a dominant gene. Requires phased data.
 
 ## Output Format
@@ -435,14 +485,25 @@ Output (JSON / VCF CSQ / TSV)
 2. **PP1/BS4** (segregation): Requires multi-generation pedigree with affection status beyond trio
 3. **PP4** (phenotype specificity): Requires patient HPO phenotype terms
 4. **BP5** (alternate molecular basis): Requires case-level multi-gene analysis
-5. **PS1/PM5/PM1** require the ClinVar protein index `.oga` file to be built and loaded
-6. **BP3** requires RepeatMasker interval `.osi` file to be built and loaded
-7. **PS2/PM6/PM3/BP2** require a multi-sample VCF with trio sample names configured
-8. Compound heterozygote detection (PM3/BP2) works per-batch in the CLI; variants in different batches within the same gene may not be cross-referenced
+5. **PS4** is `NotEvaluated` by default — true PS4 needs case-control statistics; the legacy ClinVar-stars proxy is invalid per SVI. Opt back in via `use_clinvar_stars_as_ps4_proxy = true` for backward-comparable benchmarks.
+6. **PS1/PM5/PM1** require the ClinVar protein index `.oga` file to be built and loaded. PS1 splice-RNA path requires the pipeline to populate `same_splice_position_pathogenic`; without it, splice PS1 is `evaluated: false`.
+7. **PVS1 grading** uses Abou Tayoun 2018 signals (`predicted_nmd`, `protein_truncation_pct`, `is_last_exon`, `in_critical_region`, `alt_start_codon_distance`). When the pipeline cannot derive these for a transcript, PVS1 falls back to legacy Very Strong on any null variant in an LOF-intolerant gene.
+8. **BP7 exon-edge / deep-intronic extension** uses optional `at_exon_edge` / `intronic_offset` fields. When unset, BP7 falls back to the legacy synonymous-only rule.
+9. **BP3** requires RepeatMasker interval `.osi` file to be built and loaded
+10. **PS2/PM6/PM3/BP2** require a multi-sample VCF with trio sample names configured
+11. Compound heterozygote detection (PM3/BP2) works per-batch in the CLI; variants in different batches within the same gene may not be cross-referenced
+12. **Multi-disorder genes** (SVI July 2025): the per-disorder override schema (`gene_overrides[GENE].disorders[DISORDER]`) is in place but the active-disorder selection mechanism is informational scaffolding pending a follow-up PR.
 
 ## References
 
 - Richards S, et al. Standards and guidelines for the interpretation of sequence variants. *Genet Med*. 2015;17(5):405-424.
+- Abou Tayoun AN, et al. Recommendations for interpreting the loss of function PVS1 ACMG/AMP variant criterion. *Hum Mutat*. 2018;39(11):1517-1524.
+- Ghosh R, et al. Updated recommendation for the benign stand-alone ACMG/AMP criterion. *Hum Mutat*. 2018;39(11):1525-1530.
 - Tavtigian SV, et al. Modeling the ACMG/AMP variant classification guidelines as a Bayesian classification framework. *Genet Med*. 2018;20(9):1054-1060.
-- ClinGen Sequence Variant Interpretation (SVI) recommendations: https://clinicalgenome.org/tools/clingen-variant-classification-guidance/
+- ClinGen SVI Recommendation for Absence/Rarity (PM2) — Version 1.0. Approved September 4, 2020.
+- ClinGen SVI Recommendation for In-Trans Criterion (PM3) — Version 1.0.
 - Pejaver V, et al. Calibration of computational tools for missense variant pathogenicity classification and ClinGen recommendations for PP3/BP4 criteria. *Am J Hum Genet*. 2022;109(12):2163-2177.
+- Walker LC, et al. (ClinGen SVI Splicing Subgroup). Using the ACMG/AMP framework to capture evidence related to predicted and observed impact on splicing. *Am J Hum Genet*. 2023;110(7):1046-1067.
+- ClinGen SVI Working Group. Guidance to VCEPs Regarding gnomAD v4 (March 2024).
+- ClinGen SVI Working Group. Guidance Classifying Variants in Genes Associated with Multiple Disorders (July 2025).
+- ClinGen Sequence Variant Interpretation (SVI) recommendations: https://clinicalgenome.org/tools/clingen-variant-classification-guidance/

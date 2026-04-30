@@ -31,10 +31,10 @@ Roughly 90% of ACMG criteria fire with just three sources:
 | Source | Used by | Download size | Build time |
 |---|---|---|---|
 | **gnomAD v4** | BA1, BS1, BS2, PM2 | ~30–60 GB (genomes), ~5 GB (exomes) | ~20–60 min |
-| **ClinVar** | PS4, PP5, BP6 | ~50 MB | ~30 sec |
-| **REVEL** | PP3, BP4 (missense) | ~3 GB | ~5 min |
+| **ClinVar** | PP5, BP6 (PS4 is `NotEvaluated` by default per SVI; opt in via `use_clinvar_stars_as_ps4_proxy`) | ~50 MB | ~30 sec |
+| **REVEL** | PP3, BP4 (missense only — Pejaver 2022 calibration) | ~3 GB | ~5 min |
 
-That leaves the splicing path (PP3/BP4 splice, BP7 — needs SpliceAI), conservation-only paths (PP3/BP4/BP7 fallback — needs PhyloP), and gene-level criteria (PVS1, PS1, PM1, PM5 — see [Gene-level sources](#gene-level-sources-oga) below).
+That leaves the splicing path (PP3/BP4 splice, BP7 — needs SpliceAI), the BP7 conservation tier (PhyloP), and gene-level criteria (PVS1, PS1, PM1, PM5, PM3 — see [Gene-level sources](#gene-level-sources-oga) below).
 
 ## Source-by-source recipes
 
@@ -46,7 +46,7 @@ mkdir -p sa_databases && cd sa_databases
 
 ### ClinVar — clinical significance
 
-Used by PS4, PP5, BP6. Updated weekly.
+Used by PP5, BP6 (both off by default per SVI; enable with `use_pp5_bp6 = true`). PS4 is `NotEvaluated` by default — true PS4 needs case-control statistics, which ClinVar review-stars do not provide; opt in via `use_clinvar_stars_as_ps4_proxy = true` for backward-comparable benchmarks. ClinVar is also consumed by PM3 / BP2 (companion-variant pathogenicity check) and feeds the separate `clinvar_protein` `.oga` (PS1 / PM5 / PM1). Updated weekly.
 
 ```bash
 # 1. Download
@@ -128,7 +128,7 @@ fastvep sa-build --source spliceai -i spliceai_scores.masked.snv.hg38.vcf.gz -o 
 
 ### dbNSFP — SIFT / PolyPhen / metaSVM
 
-Used by PP3 and BP4 (consensus signals; in transparency-only mode after PR1, no longer drives PP3/BP4 firing).
+**Transparency-only.** The pre-PR1 PP3/BP4 ≥3-of-4 SIFT/PolyPhen/PhyloP/GERP consensus path was removed per Pejaver 2022 (REVEL alone is the calibrated single-tool recommendation). SIFT and PolyPhen predictions are still parsed and surfaced in `details` for review but do not drive PP3/BP4 firing. Skip this source unless you want the predictions in the JSON output.
 
 ```bash
 # 1. Download from https://sites.google.com/site/jpopgen/dbNSFP
@@ -140,7 +140,7 @@ fastvep sa-build --source dbnsfp -i dbNSFP4.5a.zip -o dbnsfp --assembly GRCh38
 
 ### PhyloP — conservation scores
 
-Used by PP3, BP4, BP7. Position-level, not allele-level.
+Used by BP7 (conservation tier — `phylop_conserved` defaults to 2.0). The pre-PR1 PP3/BP4 consensus path that consumed PhyloP was removed; PhyloP is still surfaced in `details.phylop` for transparency. Position-level, not allele-level.
 
 ```bash
 # 1. Download (UCSC)
@@ -152,7 +152,7 @@ fastvep sa-build --source phylop -i hg38.phyloP100way.wigFix.gz -o phylop --asse
 
 ### GERP — evolutionary rate
 
-Used by PP3 (consensus path).
+**Optional / transparency-only.** The pre-PR1 PP3/BP4 consensus path that consumed GERP was removed per Pejaver 2022 (single calibrated tool only). GERP is still parsed and surfaced in `details.gerp` for downstream review but does not drive any criterion firing. Skip this source unless you need the score in the JSON output.
 
 ```bash
 # 1. Download from https://hgdownload.soe.ucsc.edu/gbdb/hg38/bbi/
