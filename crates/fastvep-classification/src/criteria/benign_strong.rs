@@ -64,11 +64,18 @@ fn evaluate_bs1(
                 };
             }
         }
-        let af = gnomad.all_af.unwrap_or(0.0);
-        details.insert("gnomad_allAf".into(), serde_json::json!(af));
+        // ClinGen SVI guidance applies BS1 against the **max-population
+        // AF** (mirroring BA1), not the cohort-wide allAf. Using the
+        // cohort AF would let a 5% variant in a single subpopulation slip
+        // under a 1 % BS1 threshold whenever the global cohort happens
+        // to dilute it. METHODS.md aligns: "max population AF" for both
+        // BA1 and BS1.
+        let max_pop_af = gnomad.max_pop_af().unwrap_or(0.0);
+        let cohort_af = gnomad.all_af.unwrap_or(0.0);
+        details.insert("gnomad_allAf".into(), serde_json::json!(cohort_af));
+        details.insert("gnomad_max_pop_af".into(), serde_json::json!(max_pop_af));
 
         // BS1 should not fire if BA1 would fire (BA1 takes precedence)
-        let max_pop_af = gnomad.max_pop_af().unwrap_or(0.0);
         if max_pop_af > config.ba1_af_threshold {
             (
                 false,
@@ -77,20 +84,20 @@ fn evaluate_bs1(
                     max_pop_af, config.ba1_af_threshold
                 ),
             )
-        } else if af > threshold {
+        } else if max_pop_af > threshold {
             (
                 true,
                 format!(
-                    "Allele frequency ({:.6}) exceeds expected for disorder (threshold={:.4})",
-                    af, threshold
+                    "Max-pop AF ({:.6}) exceeds expected for disorder (threshold={:.4})",
+                    max_pop_af, threshold
                 ),
             )
         } else {
             (
                 false,
                 format!(
-                    "Allele frequency ({:.6}) within expected range (threshold={:.4})",
-                    af, threshold
+                    "Max-pop AF ({:.6}) within expected range (threshold={:.4})",
+                    max_pop_af, threshold
                 ),
             )
         }
@@ -111,15 +118,22 @@ fn evaluate_bs1(
 }
 
 /// BS2: Observed in a healthy adult individual for a recessive (homozygous),
-/// dominant (heterozygous), or X-linked (hemizygous) disorder with full penetrance
-/// expected at an early age.
+/// dominant (heterozygous), or X-linked (hemizygous) disorder with full
+/// penetrance expected at an early age (Richards 2015).
 ///
-/// For dominant disorders: presence in gnomAD at any frequency with adequate sample size.
-/// For recessive disorders: homozygotes in gnomAD.
-/// Inheritance pattern inferred from OMIM phenotype annotations when available.
+/// - **Recessive** (or unknown inheritance): require ≥1 homozygote in gnomAD.
+/// - **Dominant**: require AC ≥ `bs2_ad_min_ac` (default 5) — Richards 2015
+///   says "observed in unaffected adult", which is not the same as a single
+///   carrier of a novel allele in a 100K cohort. Singletons / doubletons
+///   are sequencing-noise plausibility, not evidence the variant is
+///   tolerated. ClinGen VCEPs commonly use AC ≥ 5 (Hereditary Cancer
+///   VCEP, Lynch Syndrome curation guide).
+///
+/// Inheritance is inferred from the disease-gene `.oga` (ClinGen GDV
+/// preferred, OMIM accepted as legacy).
 fn evaluate_bs2(
     input: &ClassificationInput,
-    _config: &AcmgConfig,
+    config: &AcmgConfig,
 ) -> EvidenceCriterion {
     let mut details = serde_json::Map::new();
 
@@ -137,29 +151,43 @@ fn evaluate_bs2(
     let (met, evaluated, summary) = if let Some(ref gnomad) = input.gnomad {
         let hc = gnomad.all_hc.unwrap_or(0);
         let an = gnomad.all_an.unwrap_or(0);
-        let af = gnomad.all_af.unwrap_or(0.0);
+        let ac = gnomad.all_ac.unwrap_or(0);
         details.insert("gnomad_allHc".into(), serde_json::json!(hc));
         details.insert("gnomad_allAn".into(), serde_json::json!(an));
+        details.insert("gnomad_allAc".into(), serde_json::json!(ac));
 
-        if is_dominant && af > 0.0 && an > 10000 {
-            // For dominant fully-penetrant disorders, any carrier in a large population
-            // suggests benign (the individual would be affected if pathogenic)
+        if is_dominant && !is_recessive && ac >= config.bs2_ad_min_ac {
+            // For AD-only genes: ≥`bs2_ad_min_ac` heterozygote observations
+            // in healthy adults (gnomAD). Singletons / doubletons of a
+            // novel allele are not BS2 evidence.
             (
                 true,
                 true,
                 format!(
-                    "Present in gnomAD (AF={:.6}, AN={}) for autosomal dominant disorder, suggesting tolerated",
-                    af, an
+                    "Observed in gnomAD as ≥{} unaffected heterozygotes (AC={}) for autosomal-dominant disorder",
+                    config.bs2_ad_min_ac, ac
                 ),
             )
         } else if hc > 0 {
-            // For recessive or unknown inheritance: homozygotes suggest benign
+            // Recessive / X-linked / unknown inheritance: ≥1 homozygote is
+            // BS2 evidence regardless of inheritance label (a homozygous
+            // healthy adult disproves recessive lethality and challenges
+            // dominant haploinsufficiency-or-not).
             (
                 true,
                 true,
                 format!(
                     "Observed as homozygous in gnomAD ({} homozygotes), suggesting tolerated in healthy adults",
                     hc
+                ),
+            )
+        } else if is_dominant && !is_recessive {
+            (
+                false,
+                true,
+                format!(
+                    "AC={} below BS2 threshold ({} required for AD)",
+                    ac, config.bs2_ad_min_ac
                 ),
             )
         } else {

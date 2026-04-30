@@ -45,8 +45,8 @@ fn test_vep_insertion_parsing() {
 
 #[test]
 fn test_vep_insertion_single_base() {
-    // 21 30000105 rs34788396 C CC → insertion of 1 base
-    let line = "21\t30000105\trs34788396\tC\tCC\t.\t.\t.";
+    // 21 30000105 rs34988396 C CC → insertion of 1 base
+    let line = "21\t30000105\trs34988396\tC\tCC\t.\t.\t.";
     let vf = parse_vcf_line(line).unwrap();
 
     assert_eq!(vf.position.start, 30000106);
@@ -137,11 +137,11 @@ fn test_vep_chr_prefix_handling() {
 #[test]
 fn test_vep_mt_chromosome() {
     // Mitochondrial chromosome
-    let line = "MT\t4472\t.\tT\tA\t.\t.\t.";
+    let line = "MT\t4492\t.\tT\tA\t.\t.\t.";
     let vf = parse_vcf_line(line).unwrap();
 
     assert_eq!(vf.position.chromosome, "MT");
-    assert_eq!(vf.position.start, 4472);
+    assert_eq!(vf.position.start, 4492);
     assert_eq!(vf.allele_string, "T/A");
 }
 
@@ -206,7 +206,7 @@ fn test_vep_unordered_variants() {
     // Variants from test_not_ordered.vcf — mixed chromosomes and positions
     let vcf = "##fileformat=VCFv4.2\n\
 #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n\
-1\t230710034\trs894744940\tC\tT\t.\t.\t.\n\
+1\t230710034\trs894944940\tC\tT\t.\t.\t.\n\
 21\t25587758\trs116645811\tG\tA\t.\t.\t.\n\
 21\t25592836\trs1135638\tG\tA\t.\t.\t.\n\
 1\t230710045\trs754176245\tC\tT\t.\t.\t.\n";
@@ -230,7 +230,7 @@ fn test_vep_indel_variety() {
         ("21\t30000016\trs202173120\tT\tTCA\t.\t.\t.", 30000017, "-/CA"),
         ("21\t30000018\trs144102269\tA\tAAT\t.\t.\t.", 30000019, "-/AT"),
         ("21\t30000020\trs35748481\tG\tGAT\t.\t.\t.", 30000021, "-/AT"),
-        ("21\t30000105\trs34788396\tC\tCC\t.\t.\t.", 30000106, "-/C"),
+        ("21\t30000105\trs34988396\tC\tCC\t.\t.\t.", 30000106, "-/C"),
     ];
 
     for (line, expected_start, expected_alleles) in test_cases {
@@ -478,6 +478,7 @@ fn mock_vf_missense() -> VariationFeature {
                 sift: Some("tolerated_low_confidence(0.06)".into()),
                 polyphen: Some("benign(0)".into()),
                 supplementary: Vec::new(),
+                acmg_classification: None,
             }],
             canonical: false,
             strand: Strand::Forward,
@@ -580,6 +581,7 @@ fn test_csq_frameshift_codon_format() {
                 sift: None,
                 polyphen: None,
                 supplementary: Vec::new(),
+                acmg_classification: None,
             }],
             canonical: false,
             strand: Strand::Forward,
@@ -644,13 +646,13 @@ fn test_csq_header_includes_new_fields() {
 #[test]
 fn test_csq_field_count_matches_vep() {
     // Extended field set includes all VEP fields plus CANONICAL, CCDS, ENSP, SOURCE, HGVS_OFFSET
-    assert_eq!(output::DEFAULT_CSQ_FIELDS.len(), 47, "DEFAULT_CSQ_FIELDS should have 47 fields");
+    assert_eq!(output::DEFAULT_CSQ_FIELDS.len(), 49, "DEFAULT_CSQ_FIELDS should have 49 fields");
 
-    // Verify formatting produces 47 pipe-delimited values
+    // Verify formatting produces 49 pipe-delimited values
     let vf = mock_vf_missense();
     let csq = output::format_csq(&vf, output::DEFAULT_CSQ_FIELDS);
     let field_count = csq.split('|').count();
-    assert_eq!(field_count, 47, "CSQ output should have 47 pipe-delimited fields");
+    assert_eq!(field_count, 49, "CSQ output should have 49 pipe-delimited fields");
 }
 
 #[test]
@@ -663,7 +665,7 @@ fn test_csq_missense_full_42_field_match() {
     let csq = output::format_csq(&vf, output::DEFAULT_CSQ_FIELDS);
     let fields: Vec<&str> = csq.split('|').collect();
 
-    // VEP expected values (all 47 fields)
+    // VEP expected values (all 49 fields)
     let expected: Vec<&str> = vec![
         "C",                                  // 0:  Allele
         "missense_variant",                   // 1:  Consequence
@@ -712,6 +714,8 @@ fn test_csq_missense_full_42_field_match() {
         "",                                   // 44: HIGH_INF_POS
         "",                                   // 45: MOTIF_SCORE_CHANGE
         "",                                   // 46: TRANSCRIPTION_FACTORS
+        "",                                   // 47: ACMG (empty when --acmg not run)
+        "",                                   // 48: ACMG_CRITERIA
     ];
 
     assert_eq!(fields.len(), expected.len(),
@@ -761,6 +765,7 @@ fn test_csq_frameshift_full_42_field_match() {
                 sift: None,
                 polyphen: None,
                 supplementary: Vec::new(),
+                acmg_classification: None,
             }],
             canonical: false,
             strand: Strand::Forward,
@@ -840,6 +845,8 @@ fn test_csq_frameshift_full_42_field_match() {
         "",                     // 44: HIGH_INF_POS
         "",                     // 45: MOTIF_SCORE_CHANGE
         "",                     // 46: TRANSCRIPTION_FACTORS
+        "",                     // 47: ACMG
+        "",                     // 48: ACMG_CRITERIA
     ];
 
     assert_eq!(fields.len(), expected.len(),
@@ -890,6 +897,7 @@ fn test_csq_downstream_variant_match() {
                 sift: None,
                 polyphen: None,
                 supplementary: Vec::new(),
+                acmg_classification: None,
             }],
             canonical: false,
             strand: Strand::Forward,
@@ -921,7 +929,7 @@ fn test_csq_downstream_variant_match() {
     // VEP expected:
     // C|downstream_gene_variant|MODIFIER|OR4G11P|ENSG00000240361|Transcript|ENST00000492842.2|
     // transcribed_unprocessed_pseudogene|||||||||||A|A/C|1681|1|||HGNC|HGNC:31276|...
-    assert_eq!(fields.len(), 47);
+    assert_eq!(fields.len(), 49);
     assert_eq!(fields[0], "C");
     assert_eq!(fields[1], "downstream_gene_variant");
     assert_eq!(fields[2], "MODIFIER");
@@ -979,6 +987,7 @@ fn test_csq_intron_variant_match() {
                 sift: None,
                 polyphen: None,
                 supplementary: Vec::new(),
+                acmg_classification: None,
             }],
             canonical: false,
             strand: Strand::Forward,
@@ -1010,7 +1019,7 @@ fn test_csq_intron_variant_match() {
     // VEP expected:
     // T|intron_variant|MODIFIER|ACP1|ENSG00000143727|Transcript|ENST00000272065.10|
     // protein_coding||1/5|||||||||C|C/T||1|||HGNC|HGNC:122|MANE_Select|NM_004300.4||1|P3|...
-    assert_eq!(fields.len(), 47);
+    assert_eq!(fields.len(), 49);
     assert_eq!(fields[0], "T");
     assert_eq!(fields[1], "intron_variant");
     assert_eq!(fields[2], "MODIFIER");

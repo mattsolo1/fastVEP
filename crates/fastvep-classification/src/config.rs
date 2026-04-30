@@ -132,6 +132,17 @@ pub struct AcmgConfig {
     /// that coverage.
     #[serde(default = "default_true")]
     pub pm2_absent_when_no_record: bool,
+    /// Minimum allele count (AC) required to fire BS2 on an autosomal-
+    /// dominant or X-linked-dominant gene from heterozygous gnomAD
+    /// observations alone. Singleton / doubleton observations of a
+    /// novel allele in a 100K-cohort are not sufficient evidence that
+    /// the variant is tolerated in healthy adults — Richards 2015 BS2
+    /// requires "observed in unaffected adult". For recessive genes,
+    /// BS2 still requires `≥1 homozygous observation` (`gnomad.all_hc
+    /// > 0`) regardless of this threshold. Default `5` mirrors common
+    /// ClinGen VCEP practice (e.g. Hereditary Cancer / Lynch).
+    #[serde(default = "default_bs2_ad_min_ac")]
+    pub bs2_ad_min_ac: u64,
     /// Enable PP5/BP6 criteria (disabled by default per ClinGen SVI)
     #[serde(default)]
     pub use_pp5_bp6: bool,
@@ -241,6 +252,7 @@ impl Default for AcmgConfig {
             pm1_hotspot_min_pathogenic: 3,
             pm2_downgrade_to_supporting: true,
             pm2_absent_when_no_record: true,
+            bs2_ad_min_ac: 5,
             use_pp5_bp6: false,
             ba1_exceptions: default_ba1_exceptions(),
             use_clinvar_stars_as_ps4_proxy: false,
@@ -289,6 +301,7 @@ fn default_bs1() -> f64 { 0.01 }
 fn default_pm2() -> f64 { 0.0001 }
 fn default_pm2_ad() -> f64 { 0.0 }
 fn default_pm2_ar() -> f64 { 0.00007 }
+fn default_bs2_ad_min_ac() -> u64 { 5 }
 fn default_pp3_supporting() -> f64 { 0.644 }
 fn default_pp3_moderate() -> f64 { 0.773 }
 fn default_pp3_strong() -> f64 { 0.932 }
