@@ -102,11 +102,60 @@ which joins three sources:
 | `fastvep_ACMG` | predicted classification short code (P / LP / VUS / LB / B) |
 | `fastvep_ACMG_CRITERIA` | `&`-joined met criteria codes |
 
+**fastVEP per-variant score panel (24 columns from JSON, prefixed `fastvep_`)**
+
+These are the actual values that drive the ACMG criteria decisions —
+distilled from the same JSON that fastVEP's classifier consumes. Empty
+values mean the data source isn't loaded or the variant is absent from it.
+
+| Column | Drives | Source |
+|--------|--------|--------|
+| `fastvep_revel_score` | PP3 / BP4 (missense) per Pejaver 2022 | REVEL v1.3 `.osa` |
+| `fastvep_phylop` | BP7 conservation gate per Walker 2023 | gnomAD v4 INFO `phylop` (Zoonomia 241-mammal score) distilled to PhyloP `.osa` |
+| `fastvep_gerp` | unused (placeholder); empty in v6 | — |
+| `fastvep_spliceai_dsAg` / `_dsAl` / `_dsDg` / `_dsDl` | acceptor-gain / acceptor-loss / donor-gain / donor-loss delta scores | SpliceAI `.osa` (distilled from gnomAD v4 INFO `spliceai_ds_max`) |
+| `fastvep_spliceai_max_ds` | PP3 splice (≥0.2) / BP4 splice (≤0.1) per Walker 2023 | computed = max of the four ds heads |
+| `fastvep_spliceai_gene` | gene context for the SpliceAI score | (always `"gnomad"` since we distilled from gnomAD INFO) |
+| `fastvep_gnomad_allAf` / `_allAc` / `_allAn` / `_allHc` | PM2 / BA1 / BS1 / BS2 (BS2 is `_allHc > 0` for AD genes) | gnomAD v4.1 exomes `.osa` |
+| `fastvep_gnomad_<pop>Af` (afr, amr, asj, eas, fin, mid, nfe, remaining, sas) | per-population AF; drives `max_pop_af` for BA1/BS1 | gnomAD v4.1 |
+| `fastvep_gnomad_max_pop_af` | BA1 (>5 %) / BS1 (>1 % default) | computed = max across all populations |
+| `fastvep_acmg_classification` | full ACMG call (Pathogenic / Likely_pathogenic / UncertainSignificance / Likely_benign / Benign) | classifier output |
+| `fastvep_acmg_triggered_rule` | which Richards 2015 + SVI combination rule fired (e.g. `PVS + ≥1 PP (SVI)` → LP) | classifier output |
+
+**fastVEP gene-level fields (6 columns, prefixed `fastvep_gene_`)**
+
+These come from the `.oga` gene-level annotation databases and inform
+the gene-context criteria.
+
+| Column | Drives | Source |
+|--------|--------|--------|
+| `fastvep_gene_pLI` | PVS1 (≥0.9 → LOF-intolerant), BP1 (missense in pLI≥0.9 truncation gene = sub-threshold) | gnomAD v4.1 constraint metrics `.oga` |
+| `fastvep_gene_LOEUF` | PVS1 (≤0.35 → LOF-intolerant) | same |
+| `fastvep_gene_misZ` | PP2 (≥3.09 → missense-constrained) | same |
+| `fastvep_gene_synZ` | sanity check on misZ calibration | same |
+| `fastvep_gene_omim_phenotypes` | PVS1 disease-gene fallback; PM3 / BP2 inheritance (AR / AD); BS2 hom requires AR | ClinGen Gene-Disease Validity `.oga` (preferred per Abou Tayoun 2018) or OMIM `genemap2.txt` (legacy) |
+| `fastvep_gene_clinvar_protein_n` | count of pathogenic protein variants registered for this gene; PS1 / PM5 / PM1 driver source | ClinVar `variant_summary.txt.gz` `.oga` |
+
 **Helper (1 column)**
 
 | Column | Description |
 |--------|-------------|
 | `review_question` | pre-formatted prompt: "Why does fastVEP call X when ClinVar says Y? Inspect: <HGVS>; criteria fired = <list>" |
+
+### Coverage on the 112 discrepancies
+
+Empty cells reflect either (a) the data source doesn't apply to the
+variant (REVEL is missense-only; SpliceAI doesn't fire on far-from-
+splice variants) or (b) the variant is truly absent from the source
+(gnomAD `_allAf` empty = variant not in gnomAD = PM2_Supporting fires
+in the classifier per the v6 fix).
+
+| Score | Populated | Note |
+|-------|----------:|------|
+| REVEL | 60 / 112 | Only missense variants; matches missense subset |
+| PhyloP | 74 / 112 | Variants where the position has a gnomAD record (PhyloP is distilled from gnomAD INFO) |
+| SpliceAI max_ds | 71 / 112 | Same gnomAD-distillation coverage |
+| gnomAD allAf | 59 / 112 | The other 53 are absent from gnomAD — PM2_Supporting fires |
 
 ## Top 7 (3-star expert-panel opposite calls)
 
