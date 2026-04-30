@@ -1,0 +1,97 @@
+# Medical-geneticist review queue (v6 benchmark)
+
+This document curates the variants where fastVEP and ClinVar 2-star+
+disagree most strongly — i.e. where the classifier commits to a
+directional call that contradicts the expert-panel review. It excludes
+cases where fastVEP calls VUS due to insufficient automatable evidence
+(those need data, not curation).
+
+## Top-line numbers
+
+| Outcome | Count | What it is |
+|---------|------:|------------|
+| **Truth-not-annotated (NoCall)** | **1** | A single regulatory variant chr6:99593111 G>C (PRDM13, North Carolina macular dystrophy, OMIM 616842.0002). Falls upstream of any transcript so VEP picks `intergenic_variant` and no ACMG block is emitted. Pathogenicity here is via a non-coding regulatory mechanism that the standard ACMG framework doesn't address — flag as "out-of-scope-of-ACMG" and review manually. |
+| **Opposite-direction discrepancies** | **112** | Variants where fastVEP calls P/LP and ClinVar says LB/B (or vice versa). The candidate set for MD review. |
+| Same-class differences (P/LP/B/LB ↔ VUS) | 9,888 | These are *not* opposite-direction; they reflect missing manual-curation evidence (PS3 functional, PP1 segregation, etc.) by design. |
+| Same-direction calls | 473,421 | Classifier and ClinVar agree on direction. |
+
+The single NoCall is **not** a classifier bug — it's a recognized gap
+between coding-variant ACMG and non-coding regulatory pathogenicity.
+Recommendation: fastVEP should ship a flag `--report-noncoding` that
+emits a stub ACMG block for upstream/3'UTR/intergenic calls so they
+appear in downstream review queues rather than vanishing.
+
+## Curated review file
+
+`discrepancies_for_md_review.tsv` ranks all 112 opposite-direction
+cases by:
+
+1. **3-star (expert panel) > 2-star** — the truth is more reliable, so
+   classifier disagreement is more interesting.
+2. **Pathogenic↔Benign (full reversal) > LP↔LB** — extremity weighted
+   higher.
+3. **Number of criteria fired** — more evidence on the disagreeing
+   side = more confident classifier disagreement = stronger candidate
+   for re-curation.
+
+Columns: `priority_score, chrom, pos, ref, alt, gene, stars, rcv,
+truth_class, fastvep_class, consequence, n_criteria, met_criteria,
+review_question`.
+
+## Top 7 (3-star expert-panel opposite calls)
+
+These are the **highest-priority** cases — the ClinVar review-panel
+call is from a Variant Curation Expert Panel.
+
+| # | Gene | Variant | ClinVar (3-star) | fastVEP | Criteria fired | Review hypothesis |
+|---|------|---------|------------------|---------|----------------|-------------------|
+| 1 | **OTOF**  | chr2:26463969 C>G  | Pathogenic | LB | PS1, BS2, BP4 | Same-AA-as-known-pathogenic + healthy-homozygote conflict. Likely a hypomorphic allele where heterozygotes are healthy but compound-het with another pathogenic allele causes auditory neuropathy. ACMG combiner correctly hits VUS-conflicting; ClinVar's panel has functional/segregation evidence we don't have. |
+| 2 | **CYP1B1** | chr2:38075207 C>T | Pathogenic | LB | PS1, BS2, BP4 | Same pattern as OTOF — known pathogenic-by-AA but observed in healthy homozygotes. Recessive primary congenital glaucoma; this is OMIM 601771.0003. Clinical variability is well-documented. Re-evaluate whether BS2 should be silenced for genes where homozygous healthy adults *can* exist (incomplete penetrance). |
+| 3 | **SCN2A**  | chr2:165344715 A>G | **Benign** | **LP** | PM1, PM2_Supporting, PM5, PP2, BP4 | Five criteria all firing in the pathogenic direction (with BP4 from REVEL ≤ 0.290). ClinVar says benign. **This is the strongest classifier-disagrees-with-panel case.** Worth checking the actual ClinVar submission rationale — possible that the variant is in a benign domain despite the hotspot context. |
+| 4 | **MSH2**   | chr2:47416297 G>A | Likely Benign | LP | PS1, PM1, BP4 | Lynch syndrome locus — same-AA-as-pathogenic call. ClinVar has hypothesized hypomorphic / VUS reclassification; check current InSiGHT classification. |
+| 5 | **MYOC**   | chr1:171652476 G>A | Likely Benign | LP | PVS1, PM2_Supporting | Stop_gained in MYOC (juvenile open-angle glaucoma, OMIM 601652). PVS1+PM2 → LP per ClinGen SVI rule. Glaucoma panel may have downgraded based on incomplete penetrance / variable expressivity in healthy elderly. Worth checking gene-specific PVS1 calibration (is MYOC truly haploinsufficient?). |
+| 6 | **MSH6**   | chr2:47806652 GTAAC>G | Likely Benign | LP | PVS1, PM2_Supporting | Splice donor variant in Lynch-syndrome locus. PVS1 fires on canonical splice. Likely a panel re-classification based on RNA studies showing tolerated transcript or in-frame skip. |
+| 7 | **MSH6**   | chr2:47806842 T>TTTGA | Likely Benign | LP | PVS1, PM2_Supporting | Frameshift variant in MSH6. Same pattern — panel may have downgraded based on functional / segregation evidence. |
+
+## Top 20 (all 2-star+ opposite-direction)
+
+See `discrepancies_for_md_review.tsv` for the full ranked list.
+Notable patterns:
+
+- **PS1 + BS2** conflict (~30 % of opposites): a same-AA-as-pathogenic
+  match co-occurring with healthy-adult homozygote observations. This
+  is the *literal* signature of incomplete-penetrance / hypomorphic
+  alleles. ACMG-AMP doesn't have a clean rule for these — manual
+  curation needs to choose which evidence dominates.
+- **PVS1 + BS2** (~10 %): null-variant pathogenic by mechanism but
+  ClinVar has BS2 from healthy adult homozygotes. Likely needs RNA /
+  protein functional data the classifier can't see.
+- **MSH6, MSH2, MUTYH** appear repeatedly — Lynch-syndrome and
+  MAP-related genes with active expert-panel re-curation. These are
+  worth a sweep through current InSiGHT classifications.
+- **PCSK9** (7 cases) — gain-of-function disease gene where the
+  ClinGen Familial Hypercholesterolemia VCEP recently re-curated many
+  variants; the v6 calls predate the latest VCEP guidance.
+
+## Recommended workflow
+
+1. Open `discrepancies_for_md_review.tsv` in a spreadsheet.
+2. Filter `stars == 3` (top 7 cases) — review first.
+3. For each case, look up `rcv` in ClinVar and read the assertion
+   evidence (especially PS3 functional and PP1 segregation rationale).
+4. If the panel call is well-supported, consider whether fastVEP needs
+   a per-gene config override (e.g. silence BS2 for genes with
+   well-documented incomplete penetrance, or downgrade PVS1 for genes
+   where some null variants are tolerated).
+5. If the panel call seems out-of-date, flag for ClinVar re-submission.
+6. For the remaining 105 2-star cases, batch-review by gene
+   (the file is sorted by gene within priority).
+
+## What's NOT in this list (and why)
+
+- **All 9,888 P/LP → VUS cases**: not a wrong call, just missing
+  evidence. Fix is data (PS3 functional, PP1 segregation, PP4
+  phenotype-specific) not curation.
+- **The 1 NoCall (PRDM13 regulatory variant)**: out of ACMG scope.
+- **Any same-direction call**: classifier and panel agree on direction
+  (P↔LP or B↔LB) — these are concordant even if not exact-match.
