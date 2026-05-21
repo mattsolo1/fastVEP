@@ -745,7 +745,9 @@ pub fn format_vcf_info_fields(original_info: &str, vf: &VariationFeature, csq: &
 }
 
 fn format_spliceai_projection(vf: &VariationFeature) -> Option<String> {
+    // O(n) order-preserving dedup (was O(n^2) via `Vec::contains`).
     let mut values: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for tv in &vf.transcript_variations {
         for aa in &tv.allele_annotations {
             let Some(joined) = format_spliceai_for_allele(vf, aa) else {
@@ -755,9 +757,8 @@ fn format_spliceai_projection(vf: &VariationFeature) -> Option<String> {
             // allele; split them back out so variant-level dedupe stays
             // entry-by-entry rather than across whole allele payloads.
             for value in joined.split(',') {
-                let owned = value.to_string();
-                if !values.contains(&owned) {
-                    values.push(owned);
+                if seen.insert(value.to_string()) {
+                    values.push(value.to_string());
                 }
             }
         }
@@ -802,16 +803,20 @@ fn escape_spliceai_field(value: &str) -> String {
 }
 
 fn format_allele_projection(vf: &VariationFeature, spec: &VcfProjectionSpec) -> Option<String> {
+    // Preserve first-seen order while deduplicating in O(n) instead of the
+    // earlier O(n^2) `Vec::contains` scan. A variant overlapping many
+    // transcripts with the same SA payload can otherwise quadruple-walk
+    // every projection string in a hot loop.
     let mut values: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for tv in &vf.transcript_variations {
         for aa in &tv.allele_annotations {
             let Some(joined) = format_allele_projection_for_aa(vf, aa, spec) else {
                 continue;
             };
             for value in joined.split(',') {
-                let owned = value.to_string();
-                if !values.contains(&owned) {
-                    values.push(owned);
+                if seen.insert(value.to_string()) {
+                    values.push(value.to_string());
                 }
             }
         }
@@ -834,6 +839,7 @@ fn iter_gene_objects(parsed: &Value) -> Vec<&Value> {
 
 fn format_gene_projection(vf: &VariationFeature, spec: &VcfProjectionSpec) -> Option<String> {
     let mut values: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for ga in &vf.gene_annotations {
         if ga.json_key != spec.json_key {
             continue;
@@ -850,7 +856,7 @@ fn format_gene_projection(vf: &VariationFeature, spec: &VcfProjectionSpec) -> Op
                 }
             }
             let value = parts.join("|");
-            if !values.contains(&value) {
+            if seen.insert(value.clone()) {
                 values.push(value);
             }
         }
@@ -861,12 +867,13 @@ fn format_gene_projection(vf: &VariationFeature, spec: &VcfProjectionSpec) -> Op
 fn format_spliceai_for_allele(vf: &VariationFeature, aa: &AlleleAnnotation) -> Option<String> {
     let allele = uploaded_allele_for_annotation(vf, &aa.allele);
     let mut values: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (key, json_str) in &aa.supplementary {
         if key != "spliceAI" {
             continue;
         }
         if let Some(value) = format_spliceai_entry(&allele, json_str) {
-            if !values.contains(&value) {
+            if seen.insert(value.clone()) {
                 values.push(value);
             }
         }
@@ -881,12 +888,28 @@ fn format_allele_projection_for_aa(
 ) -> Option<String> {
     let allele = uploaded_allele_for_annotation(vf, &aa.allele);
     let mut values: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (key, json_str) in &aa.supplementary {
         if key != spec.json_key {
             continue;
         }
-        let parsed = serde_json::from_str::<Value>(json_str)
-            .unwrap_or_else(|_| Value::String(json_str.clone()));
+        // Truncated or otherwise non-JSON supplementary payloads used to fall
+        // back to `Value::String(json_str.clone())` here, which silently
+        // pushed the raw blob into the projection. Now we log at debug level
+        // and skip this entry — callers see a missing column instead of a
+        // mis-shaped one.
+        let parsed = match serde_json::from_str::<Value>(json_str) {
+            Ok(v) => v,
+            Err(e) => {
+                log::debug!(
+                    "Skipping non-JSON supplementary payload for key='{}': {} (payload snippet: {})",
+                    spec.json_key,
+                    e,
+                    &json_str.chars().take(80).collect::<String>(),
+                );
+                continue;
+            }
+        };
         let entries = match spec.kind {
             VcfProjectionKind::AlleleScalar => {
                 vec![format!("{}|{}", escape_vcf_subfield(&allele), json_value_to_vcf(&parsed))]
@@ -894,7 +917,7 @@ fn format_allele_projection_for_aa(
             _ => format_object_projection_entries(&allele, &parsed, spec.fields),
         };
         for value in entries {
-            if !values.contains(&value) {
+            if seen.insert(value.clone()) {
                 values.push(value);
             }
         }
@@ -913,6 +936,7 @@ fn format_gene_projection_for_tv(
     // uses — so tab rows for transcripts with no symbol don't lose data.
     let symbol_filter = tv.gene_symbol.as_deref();
     let mut values: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for ga in &vf.gene_annotations {
         if ga.json_key != spec.json_key {
             continue;
@@ -934,7 +958,7 @@ fn format_gene_projection_for_tv(
                 }
             }
             let value = parts.join("|");
-            if !values.contains(&value) {
+            if seen.insert(value.clone()) {
                 values.push(value);
             }
         }
@@ -951,6 +975,7 @@ fn format_clinvar_protein_projection_for_tv(
     // dedupe when the transcript has no associated gene symbol.
     let symbol_filter = tv.gene_symbol.as_deref();
     let mut values: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for ga in &vf.gene_annotations {
         if ga.json_key != spec.json_key {
             continue;
@@ -968,7 +993,7 @@ fn format_clinvar_protein_projection_for_tv(
             continue;
         }
         let value = format!("{}|{}", escape_vcf_subfield(&ga.gene_symbol), variants);
-        if !values.contains(&value) {
+        if seen.insert(value.clone()) {
             values.push(value);
         }
     }
@@ -1000,6 +1025,7 @@ fn format_clinvar_protein_projection(
     spec: &VcfProjectionSpec,
 ) -> Option<String> {
     let mut values: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for ga in &vf.gene_annotations {
         if ga.json_key != spec.json_key {
             continue;
@@ -1012,7 +1038,7 @@ fn format_clinvar_protein_projection(
             continue;
         }
         let value = format!("{}|{}", escape_vcf_subfield(&ga.gene_symbol), variants);
-        if !values.contains(&value) {
+        if seen.insert(value.clone()) {
             values.push(value);
         }
     }

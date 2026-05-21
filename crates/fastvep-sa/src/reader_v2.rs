@@ -120,39 +120,67 @@ impl Osa2Reader {
     /// Build a chunk by reading its files from the ZIP archive. Pure (no cache
     /// access), so it can run with the cache mutex unheld and avoid blocking
     /// other readers during disk I/O.
+    ///
+    /// Each sub-entry is treated as follows:
+    ///   * absent from the archive (`ZipError::FileNotFound`) — legitimate
+    ///     "this chunk has no data for this field", continue with the empty
+    ///     case;
+    ///   * any other archive error — propagate, since this means the .osa2 is
+    ///     corrupt or unreadable.
+    /// Earlier revisions collapsed both cases together via `Err(_) => …`,
+    /// which silently turned data corruption into false-negative lookups.
     fn build_chunk(&self, chrom: &str, chunk_id: u32) -> Result<Chunk> {
         let file = File::open(&self.zip_path)?;
         let mut archive = zip::ZipArchive::new(file)?;
         let prefix = format!("fastsa/{}/{}/", chrom, chunk_id);
 
-        // Read var32 keys
-        let var32s = {
-            let name = format!("{}var32.bin", prefix);
-            match archive.by_name(&name) {
-                Ok(mut entry) => {
-                    let mut buf = Vec::new();
-                    entry.read_to_end(&mut buf)?;
-                    let mut keys = read_u32_array(&buf)?;
-                    delta_decode(&mut keys); // Reconstruct from deltas
-                    keys
-                }
-                Err(_) => {
-                    // Chunk doesn't exist in this archive
-                    return Ok(Chunk::empty());
-                }
+        // Read var32 keys. If absent, this chunk has no short variants at all,
+        // which also implies no long variants and no parallel value arrays —
+        // short-circuit to an empty chunk.
+        let var32s = match archive.by_name(&format!("{}var32.bin", prefix)) {
+            Ok(mut entry) => {
+                let mut buf = Vec::new();
+                entry.read_to_end(&mut buf)?;
+                let mut keys = read_u32_array(&buf)?;
+                delta_decode(&mut keys);
+                keys
+            }
+            Err(zip::result::ZipError::FileNotFound) => return Ok(Chunk::empty()),
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "failed to read var32 entry for chunk {}/{}: {}",
+                    chrom,
+                    chunk_id,
+                    e
+                ));
             }
         };
 
-        // Read long variants
-        let longs: Vec<LongVariant> = {
-            let name = format!("{}too-long.enc", prefix);
-            match archive.by_name(&name) {
-                Ok(mut entry) => {
-                    let mut buf = Vec::new();
-                    entry.read_to_end(&mut buf)?;
-                    bincode::deserialize(&buf).unwrap_or_default()
-                }
-                Err(_) => Vec::new(),
+        // Read long variants.
+        let longs: Vec<LongVariant> = match archive.by_name(&format!("{}too-long.enc", prefix)) {
+            Ok(mut entry) => {
+                let mut buf = Vec::new();
+                entry.read_to_end(&mut buf)?;
+                // Propagate bincode errors so a corrupt `too-long.enc` is
+                // reported instead of silently masquerading as "no long
+                // variants in this chunk".
+                bincode::deserialize(&buf).map_err(|e| {
+                    anyhow::anyhow!(
+                        "failed to deserialize long-variant block for chunk {}/{}: {}",
+                        chrom,
+                        chunk_id,
+                        e
+                    )
+                })?
+            }
+            Err(zip::result::ZipError::FileNotFound) => Vec::new(),
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "failed to read long-variant entry for chunk {}/{}: {}",
+                    chrom,
+                    chunk_id,
+                    e
+                ));
             }
         };
 
@@ -169,35 +197,48 @@ impl Osa2Reader {
                     entry.read_to_end(&mut buf)?;
                     values.push(read_u32_array(&buf)?);
                 }
-                Err(_) => {
-                    // Fill with missing values
+                Err(zip::result::ZipError::FileNotFound) => {
                     values.push(vec![field.missing_value; var32s.len()]);
+                }
+                Err(e) => {
+                    return Err(anyhow::anyhow!(
+                        "failed to read value column '{}' for chunk {}/{}: {}",
+                        field.alias,
+                        chrom,
+                        chunk_id,
+                        e
+                    ));
                 }
             }
         }
 
         // Read JSON blobs if any
-        let json_blobs = {
-            let name = format!("{}json_blobs.zst", prefix);
-            match archive.by_name(&name) {
-                Ok(mut entry) => {
-                    let mut buf = Vec::new();
-                    entry.read_to_end(&mut buf)?;
-                    // Bound the decompressed size to defend against zstd bombs.
-                    let mut decoder = zstd::stream::Decoder::new(buf.as_slice())?;
-                    let mut decompressed = Vec::new();
-                    let mut limited = (&mut decoder).take(MAX_JSON_BLOB_DECOMPRESSED as u64 + 1);
-                    limited.read_to_end(&mut decompressed)?;
-                    if decompressed.len() > MAX_JSON_BLOB_DECOMPRESSED {
-                        anyhow::bail!(
-                            "JSON blob decompressed size exceeds limit ({} bytes)",
-                            MAX_JSON_BLOB_DECOMPRESSED
-                        );
-                    }
-                    let text = String::from_utf8(decompressed)?;
-                    Some(text.lines().map(|l| l.to_string()).collect())
+        let json_blobs = match archive.by_name(&format!("{}json_blobs.zst", prefix)) {
+            Ok(mut entry) => {
+                let mut buf = Vec::new();
+                entry.read_to_end(&mut buf)?;
+                // Bound the decompressed size to defend against zstd bombs.
+                let mut decoder = zstd::stream::Decoder::new(buf.as_slice())?;
+                let mut decompressed = Vec::new();
+                let mut limited = (&mut decoder).take(MAX_JSON_BLOB_DECOMPRESSED as u64 + 1);
+                limited.read_to_end(&mut decompressed)?;
+                if decompressed.len() > MAX_JSON_BLOB_DECOMPRESSED {
+                    anyhow::bail!(
+                        "JSON blob decompressed size exceeds limit ({} bytes)",
+                        MAX_JSON_BLOB_DECOMPRESSED
+                    );
                 }
-                Err(_) => None,
+                let text = String::from_utf8(decompressed)?;
+                Some(text.lines().map(|l| l.to_string()).collect())
+            }
+            Err(zip::result::ZipError::FileNotFound) => None,
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "failed to read json_blobs for chunk {}/{}: {}",
+                    chrom,
+                    chunk_id,
+                    e
+                ));
             }
         };
 
@@ -274,6 +315,12 @@ impl Osa2Reader {
                 // the value columns and JSON-blob array. Without this guard
                 // `reconstruct_json` would silently return `{}` and the caller
                 // would treat it as a positive match.
+                //
+                // We take the *max* across the column lengths and the
+                // json_blobs length (the writer keeps them parallel to the
+                // sorted record order). A truly corrupt chunk with a value
+                // column shorter than the others is caught by the per-column
+                // `column.get(idx)` guard inside `reconstruct_json`.
                 let data_len = chunk
                     .values
                     .iter()

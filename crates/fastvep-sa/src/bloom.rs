@@ -69,6 +69,14 @@ fn fmix32(mut h: u32) -> u32 {
 /// fast and bounded.
 const MAX_HASHES: u32 = 16;
 
+/// Upper bound on bits per element. At 14 bits/element a Bloom filter with
+/// the optimal number of hashes has a false-positive rate of ~1e-4, which is
+/// more than enough for any reasonable genomic deployment. Capping here
+/// keeps the bit-count math entirely inside `u64`/`usize` even when `n`
+/// exceeds `2^53` (the f64 mantissa) — beyond that point the `as f64` cast
+/// loses integer precision and the previous formula could yield 0 or +∞.
+const MAX_BITS_PER_ELEMENT: usize = 64;
+
 fn optimal_num_bits(n: usize, p: f64) -> usize {
     if n == 0 {
         return 64;
@@ -76,12 +84,19 @@ fn optimal_num_bits(n: usize, p: f64) -> usize {
     // Clamp false-positive rate to a sane open interval so `p.ln()` is finite
     // and negative.
     let p = p.clamp(1e-12, 0.5);
+    let hard_cap = n.saturating_mul(MAX_BITS_PER_ELEMENT);
     let ln2_sq = std::f64::consts::LN_2 * std::f64::consts::LN_2;
     let bits = (-(n as f64) * p.ln() / ln2_sq).ceil();
     if !bits.is_finite() || bits <= 0.0 {
+        return hard_cap.max(64);
+    }
+    // Compare bits as f64 against the hard cap as f64; convert back via min
+    // to avoid an out-of-range f64-to-usize cast on astronomically large n.
+    let capped = bits.min(hard_cap as f64);
+    if capped <= 0.0 {
         64
     } else {
-        bits as usize
+        capped as usize
     }
 }
 
@@ -130,5 +145,22 @@ mod tests {
     fn test_bloom_empty() {
         let bloom = BloomFilter::new(100, 0.01);
         assert!(!bloom.might_contain(12345));
+    }
+
+    #[test]
+    fn test_optimal_num_bits_huge_n_stays_finite() {
+        // At 2^53 elements (the f64 integer-precision limit) the previous
+        // formula could lose precision and yield zero. The hard cap on
+        // bits/element keeps the result finite and bounded.
+        let bits = optimal_num_bits(1usize << 53, 1e-12);
+        assert!(bits >= 64);
+        assert!(bits <= (1usize << 53).saturating_mul(MAX_BITS_PER_ELEMENT));
+    }
+
+    #[test]
+    fn test_optimal_num_bits_basic_shape() {
+        // Sanity: small n with reasonable p falls in a sensible range.
+        let bits = optimal_num_bits(1000, 0.01);
+        assert!(bits >= 1000 && bits <= 1000 * MAX_BITS_PER_ELEMENT);
     }
 }
