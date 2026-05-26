@@ -271,25 +271,20 @@ impl AnnotationContext {
         Ok((gene_count, tr_count))
     }
 
-    /// Annotate VCF text and return JSON results.
-    pub fn annotate_vcf_text(
+    /// Annotate a single variant in-place. This is the core annotation method
+    /// that looks up overlapping transcripts, predicts consequences, computes
+    /// HGVS notations, attaches supplementary annotations, and optionally runs
+    /// ACMG classification.
+    ///
+    /// `pick`: if true, only the canonical transcript consequence is kept.
+    /// `sample_names`: sample names from VCF header, needed for trio/ACMG analysis.
+    pub fn annotate_variant(
         &self,
-        vcf_text: &str,
+        vf: &mut VariationFeature,
         pick: bool,
-    ) -> Result<Vec<serde_json::Value>> {
-        let mut vcf_parser = VcfParser::new(vcf_text.as_bytes())?;
-
-        // Extract sample names from VCF #CHROM header
-        let sample_names: Vec<String> = vcf_parser
-            .header_lines()
-            .last()
-            .filter(|l| l.starts_with("#CHROM"))
-            .map(|l| l.split('\t').skip(9).map(|s| s.to_string()).collect())
-            .unwrap_or_default();
-
-        let mut variants = vcf_parser.read_all()?;
-
-        for vf in &mut variants {
+        sample_names: &[String],
+    ) -> Result<()> {
+        {
             let chrom = &vf.position.chromosome;
             let query_start = vf.position.start.saturating_sub(self.distance).max(1);
             let query_end = vf.position.end + self.distance;
@@ -697,6 +692,30 @@ impl AnnotationContext {
             }
 
             vf.compute_most_severe();
+        }
+        Ok(())
+    }
+
+    /// Annotate VCF text and return JSON results.
+    pub fn annotate_vcf_text(
+        &self,
+        vcf_text: &str,
+        pick: bool,
+    ) -> Result<Vec<serde_json::Value>> {
+        let mut vcf_parser = VcfParser::new(vcf_text.as_bytes())?;
+
+        // Extract sample names from VCF #CHROM header
+        let sample_names: Vec<String> = vcf_parser
+            .header_lines()
+            .last()
+            .filter(|l| l.starts_with("#CHROM"))
+            .map(|l| l.split('\t').skip(9).map(|s| s.to_string()).collect())
+            .unwrap_or_default();
+
+        let mut variants = vcf_parser.read_all()?;
+
+        for vf in &mut variants {
+            self.annotate_variant(vf, pick, &sample_names)?;
         }
 
         // Compound-het enrichment pass: re-evaluate PM3/BP2 with companion variant data
