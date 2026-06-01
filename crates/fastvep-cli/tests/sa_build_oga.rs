@@ -847,6 +847,89 @@ fn sa_only_requires_sa_dir() {
 }
 
 #[test]
+fn sa_only_multi_allelic_emits_per_alt_rows_with_independent_sa_columns() {
+    // Regression: --sa-only mode must lookup supplementary annotations
+    // independently for each ALT of a multi-allelic site. The input has
+    // 1:30000 C>T,A. A ClinVar fixture is seeded with a match for C>T only.
+    // We expect exactly two rows for 1:30000 — one per alt — with
+    // FV_CLINVAR populated only on the T row.
+    let tmp = tempfile::tempdir().unwrap();
+    let input_vcf = tmp.path().join("input.vcf");
+    let output_tab = tmp.path().join("annotated.tab");
+    fs::write(&input_vcf, INPUT_NO_SPLICEAI_INFO_VCF).unwrap();
+
+    // Custom ClinVar fixture: pathogenic for C>T at chr1:30000, nothing at A.
+    let clinvar_source = tmp.path().join("clinvar-mini.vcf");
+    let clinvar_base = tmp.path().join("clinvar-mini");
+    let clinvar_fixture = "\
+##fileformat=VCFv4.1
+##INFO=<ID=CLNSIG,Number=.,Type=String>
+##INFO=<ID=CLNREVSTAT,Number=.,Type=String>
+##INFO=<ID=CLNDN,Number=.,Type=String>
+##INFO=<ID=CLNVC,Number=.,Type=String>
+##INFO=<ID=CLNVCSO,Number=.,Type=String>
+#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO
+1\t30000\trs2\tC\tT\t.\t.\tCLNSIG=Likely_pathogenic;CLNREVSTAT=criteria_provided;CLNDN=Test;CLNVC=SNV;CLNVCSO=SO:0001483
+";
+    fs::write(&clinvar_source, clinvar_fixture).unwrap();
+    run_sa_build(
+        "clinvar",
+        clinvar_source.to_str().unwrap(),
+        clinvar_base.to_str().unwrap(),
+        "GRCh38",
+    )
+    .unwrap();
+
+    run_annotate(AnnotateConfig {
+        input: input_vcf.to_string_lossy().into_owned(),
+        output: output_tab.to_string_lossy().into_owned(),
+        gff3: None,
+        fasta: None,
+        output_format: "tab".into(),
+        pick: false,
+        hgvs: false,
+        distance: 0,
+        cache_dir: None,
+        transcript_cache: None,
+        sa_dir: Some(tmp.path().to_string_lossy().into_owned()),
+        sa_only: true,
+        acmg: false,
+        acmg_config: None,
+        proband: None,
+        mother: None,
+        father: None,
+    })
+    .unwrap();
+
+    let annotated = fs::read_to_string(&output_tab).unwrap();
+    let rows_30k: Vec<&str> = annotated
+        .lines()
+        .filter(|l| !l.starts_with('#') && l.contains("1:30000\t"))
+        .collect();
+    assert_eq!(rows_30k.len(), 2, "expected one row per ALT, got: {:?}", rows_30k);
+
+    let mut t_row = None;
+    let mut a_row = None;
+    for row in rows_30k {
+        let cols: Vec<&str> = row.split('\t').collect();
+        assert_eq!(cols.len(), 4, "sa-only tab row must be 4 cols: {}", row);
+        match cols[2] {
+            "T" => t_row = Some(cols[3].to_string()),
+            "A" => a_row = Some(cols[3].to_string()),
+            other => panic!("unexpected allele: {}", other),
+        }
+    }
+    let t_fv = t_row.expect("missing T row");
+    let a_fv = a_row.expect("missing A row");
+    assert!(
+        t_fv.starts_with("T|Likely_pathogenic"),
+        "T row must carry ClinVar match: {}",
+        t_fv
+    );
+    assert_eq!(a_fv, "-", "A row must have no ClinVar match: {}", a_fv);
+}
+
+#[test]
 fn sa_only_strips_preexisting_csq_from_input_info() {
     // Regression: --sa-only must strip any stale CSQ=... already present in
     // the input VCF's INFO column. Otherwise the output has CSQ= data rows
@@ -910,6 +993,56 @@ fn sa_only_strips_preexisting_csq_from_input_info() {
         "FV_CLINVAR must still be added: {}",
         data_row
     );
+}
+
+#[test]
+fn sa_only_strips_csq_when_in_middle_of_info_field() {
+    // CSQ stripping must work even when CSQ is sandwiched between other INFO
+    // keys. Earlier this was only tested with CSQ at the leading position;
+    // make sure the middle case also leaves neighbouring fields intact.
+    let tmp = tempfile::tempdir().unwrap();
+    let input_vcf = tmp.path().join("input_csq_middle.vcf");
+    let output_vcf = tmp.path().join("annotated.vcf");
+    fs::write(
+        &input_vcf,
+        "##fileformat=VCFv4.2\n\
+         ##INFO=<ID=CSQ,Number=.,Type=String,Description=\"stale\">\n\
+         #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n\
+         1\t25000\t.\tA\tG\t.\t.\tAC=1;CSQ=stale_middle;AF=0.5\n",
+    )
+    .unwrap();
+    write_clinvar_fixture(tmp.path());
+
+    run_annotate(AnnotateConfig {
+        input: input_vcf.to_string_lossy().into_owned(),
+        output: output_vcf.to_string_lossy().into_owned(),
+        gff3: None,
+        fasta: None,
+        output_format: "vcf".into(),
+        pick: false,
+        hgvs: false,
+        distance: 0,
+        cache_dir: None,
+        transcript_cache: None,
+        sa_dir: Some(tmp.path().to_string_lossy().into_owned()),
+        sa_only: true,
+        acmg: false,
+        acmg_config: None,
+        proband: None,
+        mother: None,
+        father: None,
+    })
+    .unwrap();
+
+    let annotated = fs::read_to_string(&output_vcf).unwrap();
+    let row = annotated
+        .lines()
+        .find(|l| !l.starts_with('#'))
+        .expect("expected a data row");
+    assert!(!row.contains("CSQ=stale"), "stale CSQ in middle not stripped: {}", row);
+    assert!(row.contains("AC=1"), "AC must be preserved: {}", row);
+    assert!(row.contains("AF=0.5"), "AF must be preserved: {}", row);
+    assert!(row.contains("FV_CLINVAR="), "FV_CLINVAR must still be added: {}", row);
 }
 
 #[test]

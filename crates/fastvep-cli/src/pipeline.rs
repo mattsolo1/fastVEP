@@ -279,11 +279,23 @@ pub fn run_annotate(config: AnnotateConfig) -> Result<()> {
     // would emit always-empty headers/columns.
     let gene_providers: Vec<fastvep_sa::gene::GeneIndex> = if sa_only {
         if let Some(ref dir) = config.sa_dir {
-            let probe = load_gene_providers(Path::new(dir))?;
-            if !probe.is_empty() {
+            // Cheap probe: just count `.oga` files instead of fully loading
+            // each one. Earlier this path called `load_gene_providers` and
+            // discarded the result, paying the full disk-read cost for a
+            // warning message that only needs a yes/no on presence.
+            let oga_count = std::fs::read_dir(Path::new(dir))
+                .map(|it| {
+                    it.flatten()
+                        .filter(|e| {
+                            e.path().extension().and_then(|s| s.to_str()) == Some("oga")
+                        })
+                        .count()
+                })
+                .unwrap_or(0);
+            if oga_count > 0 {
                 eprintln!(
                     "warning: --sa-only ignores {} gene-level annotation source(s) (.oga) in {}; gene-level SA requires transcript overlap.",
-                    probe.len(),
+                    oga_count,
                     dir
                 );
             }
@@ -342,7 +354,11 @@ pub fn run_annotate(config: AnnotateConfig) -> Result<()> {
                 .with_context(|| format!("Creating output file: {}", config.output))?,
         )
     };
-    let mut writer = BufWriter::new(output_writer);
+    // 1 MiB buffer instead of the default 8 KiB: the per-variant output path
+    // emits dozens of small `write!` calls per row, so a larger buffer cuts
+    // the number of syscalls on a typical VCF (millions of variants) by
+    // roughly two orders of magnitude.
+    let mut writer = BufWriter::with_capacity(1 << 20, output_writer);
     let sa_json_keys: Vec<String> = sa_providers
         .iter()
         .map(|sa| sa.json_key().to_string())
@@ -1534,13 +1550,13 @@ pub fn run_filter(input: &str, output_path: &str, filter_expr: &str) -> Result<(
         Box::new(io::BufReader::new(f))
     };
 
-    // Open output
+    // Open output. 1 MiB buffer same rationale as the main annotation path.
     let mut writer: Box<dyn Write> = if output_path == "-" {
-        Box::new(BufWriter::new(io::stdout()))
+        Box::new(BufWriter::with_capacity(1 << 20, io::stdout()))
     } else {
         let f = File::create(output_path)
             .with_context(|| format!("Creating output: {}", output_path))?;
-        Box::new(BufWriter::new(f))
+        Box::new(BufWriter::with_capacity(1 << 20, f))
     };
 
     // Parse CSQ header to get field names
