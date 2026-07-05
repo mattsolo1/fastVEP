@@ -38,6 +38,21 @@ Relative to the 101 the geneticist already reviewed:
 - **93 are new to review** — they were always opposite but the old
   truncated export (chr1–5 only) never surfaced them.
 
+## Prior-review labels (new columns)
+
+Every row is tagged so you can skip what you've already adjudicated:
+
+- **`previously_reviewed`** — `reviewed_v7` (one of the 29 you saw in the last
+  round) or `new_this_version` (one of the 93 the fixed truncation newly
+  surfaced).
+- **`prior_reviewer_note`** — your `REASON FOR DISCORDANCE` from the last round,
+  carried forward for the 17 previously-reviewed rows you had annotated (blank
+  otherwise). So the 29 `reviewed_v7` rows already show your prior reasoning;
+  the 93 `new_this_version` rows are the fresh work.
+
+Regenerate with:
+`FASTVEP_BENCH_OUT=output_v8 PRIOR_REVIEW_RUN=output_v7 PRIOR_REVIEW_LABEL=v7 PRIOR_ANNOTATED_TSV=<your-marked-up.tsv> python3 04_build_md_review_table.py`
+
 ## Curated review file
 
 `discrepancies_for_md_review.tsv` ranks all 122 opposite-direction
