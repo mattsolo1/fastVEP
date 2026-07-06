@@ -52,7 +52,9 @@ AF_EXAC/AF_TGP/AF_ESP frequencies (the PM2 backstop, new in v8).
 - `discrepancies.tsv` — all opposite-direction calls (uncapped) + up to 10k soft ones
 - **`discrepancies_for_md_review.tsv`** — the 122 opposite-direction calls enriched
   with the full annotation panel, in the same format the geneticist reviewed
-  (the medical-geneticist review table)
+  (the medical-geneticist review table). Leading columns `previously_reviewed`
+  (`reviewed_v7` vs `new_this_version`) and `prior_reviewer_note` label each row
+  against the last round's review so adjudicated cases can be skipped.
 - `opposite_direction.vcf` / `.fastvep.vcf` / `.fastvep.json.gz` — the 122-variant
   subset and its HGVS/JSON re-annotation that feed the review table
 

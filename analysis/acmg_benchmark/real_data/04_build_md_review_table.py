@@ -66,6 +66,47 @@ FASTVEP_HGVS_VCF = OUT_DIR / "opposite_direction.fastvep.vcf"
 FASTVEP_JSON = OUT_DIR / "opposite_direction.fastvep.json.gz"
 OUT_TSV = OUT_DIR / "discrepancies_for_md_review.tsv"
 
+# Prior-version cross-reference. Each row is labelled by whether the geneticist
+# already saw it in the previous run's review table, so a re-review can skip
+# what's been adjudicated and focus on the newly-surfaced cases.
+#   PRIOR_REVIEW_RUN     — dir name of the previous run (default output_v7);
+#                          its discrepancies_for_md_review.tsv defines the
+#                          "previously reviewed" variant set. Set to "" to skip.
+#   PRIOR_REVIEW_LABEL   — short label for that run shown in the column
+#                          (default derived from the dir name, e.g. "v7").
+#   PRIOR_ANNOTATED_TSV  — optional path to the geneticist's annotated file
+#                          from that run; if it has a "REASON FOR DISCORDANCE"
+#                          column, those notes are carried into prior_reviewer_note.
+_prior_run = os.environ.get("PRIOR_REVIEW_RUN", "output_v7")
+PRIOR_REVIEW_DIR = (ROOT / "data/benchmark" / _prior_run) if _prior_run else None
+PRIOR_REVIEW_TSV = (PRIOR_REVIEW_DIR / "discrepancies_for_md_review.tsv") if PRIOR_REVIEW_DIR else None
+PRIOR_REVIEW_LABEL = os.environ.get(
+    "PRIOR_REVIEW_LABEL", _prior_run.replace("output_", "") if _prior_run else "prior")
+PRIOR_ANNOTATED_TSV = os.environ.get("PRIOR_ANNOTATED_TSV", "")
+
+
+def load_prior_review():
+    """Return (set of prior-reviewed variant keys, {key: reviewer_note}).
+
+    Keys are (chrom, pos, ref, alt) strings matching this run's rows. The note
+    map is populated only when PRIOR_ANNOTATED_TSV points to a file carrying a
+    'REASON FOR DISCORDANCE' column (the geneticist's marked-up copy)."""
+    keys: set = set()
+    notes: dict = {}
+    if PRIOR_REVIEW_TSV and PRIOR_REVIEW_TSV.exists():
+        with open(PRIOR_REVIEW_TSV) as f:
+            for r in csv.DictReader(f, delimiter="\t"):
+                keys.add((r["chrom"], r["pos"], r["ref"], r["alt"]))
+    if PRIOR_ANNOTATED_TSV and os.path.exists(PRIOR_ANNOTATED_TSV):
+        with open(PRIOR_ANNOTATED_TSV) as f:
+            for r in csv.DictReader(f, delimiter="\t"):
+                k = (r.get("chrom", ""), r.get("pos", ""), r.get("ref", ""), r.get("alt", ""))
+                keys.add(k)
+                note = (r.get("REASON FOR DISCORDANCE") or "").strip()
+                if note:
+                    notes[k] = note
+    return keys, notes
+
 # Fields we'll lift verbatim from each source. ClinVar field set covers
 # everything an MD curator would consult before re-classifying. The fastVEP
 # CSQ subset includes both transcript context (MANE_SELECT, CCDS, ENSP) and
@@ -394,10 +435,19 @@ def main() -> None:
             rows.append(r)
     print(f"  {len(rows)} opposite-direction discrepancies")
 
+    prior_keys, prior_notes = load_prior_review()
+    if prior_keys:
+        n_seen = sum(1 for r in rows
+                     if (r["chrom"], r["pos"], r["ref"], r["alt"]) in prior_keys)
+        print(f"  previously reviewed ({PRIOR_REVIEW_LABEL}): {n_seen}; "
+              f"new this version: {len(rows) - n_seen}"
+              + (f"; carried {len(prior_notes)} prior notes" if prior_notes else ""))
+
     score_field_names = [name for name, _ in FASTVEP_SCORE_FIELDS]
     gene_field_names = [name for name, _ in FASTVEP_GENE_FIELDS]
     header = (
         ["priority_score"]
+        + ["previously_reviewed", "prior_reviewer_note"]
         + ["chrom", "pos", "ref", "alt", "gene", "stars"]
         + ["truth_class", "fastvep_class", "n_criteria_met", "fastvep_met_criteria"]
         + ["consequence_top"]
@@ -425,8 +475,12 @@ def main() -> None:
             f"Inspect: {fv.get('HGVSp') or fv.get('HGVSc') or 'no HGVS'}; "
             f"criteria fired = {r['met_criteria'] or '(none)'}"
         )
+        prior_seen = key in prior_keys
         out_rows.append({
             "priority_score": score,
+            "previously_reviewed": (
+                f"reviewed_{PRIOR_REVIEW_LABEL}" if prior_seen else "new_this_version"),
+            "prior_reviewer_note": prior_notes.get(key, ""),
             "chrom": r["chrom"], "pos": r["pos"],
             "ref": r["ref"], "alt": r["alt"],
             "gene": r["gene"], "stars": r["stars"],
