@@ -2918,6 +2918,7 @@ mod pick_tests {
                 polyphen: None,
                 supplementary: Vec::new(),
                 acmg_classification: None,
+                loftee: None,
             }],
             canonical,
             strand: Strand::Forward,
