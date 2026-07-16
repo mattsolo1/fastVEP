@@ -481,6 +481,75 @@ mod tests {
     }
 
     #[test]
+    fn test_check_gc_to_gt_donor() {
+        // Intron 0 of make_transcript() spans exon1(end=1200)..exon2(start=2000):
+        // donor dinuc is chr1:1201-1202, acceptor dinuc is chr1:1998-1999.
+        struct MockSeqProvider {
+            donor: &'static str,
+        }
+        impl SequenceProvider for MockSeqProvider {
+            fn fetch_sequence(&self, _chrom: &str, start: u64, end: u64) -> anyhow::Result<Vec<u8>> {
+                if start == 1201 && end == 1202 {
+                    Ok(self.donor.as_bytes().to_vec())
+                } else if start == 1998 && end == 1999 {
+                    Ok(b"AG".to_vec())
+                } else {
+                    Ok(b"NN".to_vec())
+                }
+            }
+        }
+        let tr = make_transcript();
+
+        // Non-canonical GC donor + C>T variant rescues to canonical GT
+        let gc_provider = MockSeqProvider { donor: "GC" };
+        assert!(check_gc_to_gt_donor(&tr, 0, "C", "T", Some(&gc_provider)));
+        // Wrong ref/alt doesn't rescue
+        assert!(!check_gc_to_gt_donor(&tr, 0, "C", "A", Some(&gc_provider)));
+
+        // Already-canonical GT donor is not a GC->GT rescue
+        let gt_provider = MockSeqProvider { donor: "GT" };
+        assert!(!check_gc_to_gt_donor(&tr, 0, "C", "T", Some(&gt_provider)));
+
+        // No sequence provider => never rescued
+        assert!(!check_gc_to_gt_donor(&tr, 0, "C", "T", None));
+    }
+
+    #[test]
+    fn test_check_non_canonical_splice() {
+        struct MockSeqProvider {
+            donor: &'static str,
+            acceptor: &'static str,
+        }
+        impl SequenceProvider for MockSeqProvider {
+            fn fetch_sequence(&self, _chrom: &str, start: u64, end: u64) -> anyhow::Result<Vec<u8>> {
+                if start == 1201 && end == 1202 {
+                    Ok(self.donor.as_bytes().to_vec())
+                } else if start == 1998 && end == 1999 {
+                    Ok(self.acceptor.as_bytes().to_vec())
+                } else {
+                    Ok(b"NN".to_vec())
+                }
+            }
+        }
+        let tr = make_transcript();
+
+        // Canonical GT..AG intron is not flagged
+        let canonical = MockSeqProvider { donor: "GT", acceptor: "AG" };
+        assert!(!check_non_canonical_splice(&tr, 0, Some(&canonical)));
+
+        // Non-canonical donor flags the intron
+        let bad_donor = MockSeqProvider { donor: "GC", acceptor: "AG" };
+        assert!(check_non_canonical_splice(&tr, 0, Some(&bad_donor)));
+
+        // Non-canonical acceptor flags the intron
+        let bad_acceptor = MockSeqProvider { donor: "GT", acceptor: "AC" };
+        assert!(check_non_canonical_splice(&tr, 0, Some(&bad_acceptor)));
+
+        // No sequence provider => never flagged
+        assert!(!check_non_canonical_splice(&tr, 0, None));
+    }
+
+    #[test]
     fn test_ancestral_allele_snp() {
         // Mock ancestral sequence provider
         struct MockAncProvider;
