@@ -498,6 +498,7 @@ dependencies = [
  "fastvep-core",
  "fastvep-genome",
  "log",
+ "noodles-vcf",
  "serde",
  "serde_json",
  "tempfile",
@@ -947,6 +948,21 @@ dependencies = [
  "noodles-bgzf",
  "noodles-core",
  "noodles-csi",
+]
+
+[[package]]
+name = "noodles-vcf"
+version = "0.87.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12b339e85269ab7689661c690f9108dceb606bf3d230e1768799ae107d505e76"
+dependencies = [
+ "indexmap",
+ "memchr",
+ "noodles-bgzf",
+ "noodles-core",
+ "noodles-csi",
+ "noodles-tabix",
+ "percent-encoding",
 ]
 
 [[package]]

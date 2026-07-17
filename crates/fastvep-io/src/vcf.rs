@@ -4,6 +4,17 @@ use std::io::{BufRead, BufReader, Read};
 
 use crate::variant::{VariationFeature, VcfFields};
 
+/// noodles-vcf collapses a missing-value sentinel (`.`) to an empty string
+/// for ID/ALT/FILTER/INFO. fastvep-io writes these fields back out verbatim
+/// in `--vcf` output mode, so the `.` must be restored for round-trip fidelity.
+fn restore_missing_sentinel(raw: &str) -> &str {
+    if raw.is_empty() {
+        "."
+    } else {
+        raw
+    }
+}
+
 /// Parse a VCF file and yield VariationFeatures.
 pub struct VcfParser<R: Read> {
     reader: BufReader<R>,
@@ -84,26 +95,59 @@ impl<R: Read> VcfParser<R> {
 
 /// Parse a single VCF data line into a VariationFeature.
 pub fn parse_vcf_line(line: &str) -> Result<VariationFeature> {
-    let fields: Vec<&str> = line.split('\t').collect();
-    if fields.len() < 8 {
-        anyhow::bail!("VCF line has fewer than 8 fields: {}", line);
-    }
+    // Columns 9+ (FORMAT + sample genotypes) are stored as raw pass-through
+    // strings for downstream genotype parsing and are not touched by
+    // noodles-vcf's record model, so we still slice them directly.
+    let rest: Vec<String> = line
+        .split('\t')
+        .skip(8)
+        .map(|s| s.to_string())
+        .collect();
 
-    let chrom = fields[0];
-    let pos: u64 = fields[1]
-        .parse()
-        .with_context(|| format!("Invalid POS: {}", fields[1]))?;
-    let id = fields[2];
-    let ref_str = fields[3];
+    let record = noodles_vcf::Record::try_from(line.as_bytes())
+        .with_context(|| format!("Invalid VCF line: {}", line))?;
+
+    let chrom = record.reference_sequence_name();
+    let pos: u64 = match record.variant_start() {
+        Some(p) => usize::from(
+            p.with_context(|| format!("Invalid POS in VCF line: {}", line))?,
+        ) as u64,
+        None => anyhow::bail!("VCF line has no POS: {}", line),
+    };
+    let ids = record.ids();
+    let id = restore_missing_sentinel(ids.as_ref());
+    let ref_str = record.reference_bases();
     if ref_str.is_empty() {
         anyhow::bail!("VCF REF field is empty: {}", line);
     }
-    let alt_str = fields[4];
-    let qual = fields[5];
-    let filter = fields[6];
-    let info = fields[7];
+    let alternate_bases = record.alternate_bases();
+    let alt_str = restore_missing_sentinel(alternate_bases.as_ref());
 
-    let rest: Vec<String> = fields[8..].iter().map(|s| s.to_string()).collect();
+    // ------------------------------------------------------------------
+    // QUAL is intentionally NOT read from `record`.
+    //
+    // noodles_vcf::Record::quality_score() eagerly parses the QUAL column
+    // into an `f32` (`Option<io::Result<f32>>`) — there is no public API to
+    // get the raw QUAL string back out of a `Record`. That's a lossy
+    // round-trip for our purposes: fastvep-io's `--vcf` output mode writes
+    // `VcfFields::qual` back out verbatim (see `pipeline.rs`), so re-stringifying
+    // a parsed f32 can silently change the emitted VCF (e.g. "30.00" -> f32
+    // 30.0 -> formatted "30", or precision loss on very large/small values).
+    //
+    // Since we already have the raw `line` in hand, we grab QUAL with a
+    // single cheap `nth(5)` split (stops at the 6th field, no full Vec
+    // allocation) instead of routing it through noodles at all. Every other
+    // column below goes through `record` on purpose; this is the one
+    // deliberate exception, kept solely for output byte-fidelity.
+    // ------------------------------------------------------------------
+    let qual = line
+        .split('\t')
+        .nth(5)
+        .ok_or_else(|| anyhow::anyhow!("VCF line has no QUAL field: {}", line))?;
+    let filters = record.filters();
+    let filter = restore_missing_sentinel(filters.as_ref());
+    let info_field = record.info();
+    let info = restore_missing_sentinel(info_field.as_ref());
 
     // Parse alt alleles (split on comma)
     let raw_alts: Vec<&str> = alt_str.split(',').collect();

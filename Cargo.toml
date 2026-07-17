@@ -50,6 +50,7 @@ noodles-bgzf = "0.46"
 noodles-core = "0.19"
 noodles-tabix = "0.61"
 noodles-csi = "0.55"
+noodles-vcf = "0.87"
 bincode = "1"
 zstd = "0.13"
 zip = { version = "2", default-features = false, features = ["deflate"] }
