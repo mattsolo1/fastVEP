@@ -159,6 +159,22 @@ fn parse_gff3_indexed_inner(
 /// builds Transcript models. Each item is either a raw line or a typed IO
 /// error from the underlying reader; the latter aborts parsing immediately
 /// rather than being silently treated as an empty line.
+// Genome-scale GFF3 files carry a handful of distinct chromosome/biotype
+// values (e.g. ~25 chromosomes) across hundreds of thousands of gene and
+// transcript records. Without interning, every `Arc::from(&str)` call
+// allocates and copies a fresh buffer even when the value is identical to
+// one already seen, so a plain lookup-or-insert pool turns that into a
+// single allocation per distinct value plus a cheap Arc clone thereafter.
+fn intern(pool: &mut HashMap<String, Arc<str>>, s: &str) -> Arc<str> {
+    if let Some(existing) = pool.get(s) {
+        existing.clone()
+    } else {
+        let arc: Arc<str> = Arc::from(s);
+        pool.insert(s.to_string(), arc.clone());
+        arc
+    }
+}
+
 fn parse_gff3_lines(
     lines: impl Iterator<Item = Result<String>>,
 ) -> Result<Vec<Transcript>> {
@@ -477,6 +493,8 @@ fn parse_gff3_lines(
     let mut result = Vec::with_capacity(transcripts.len());
     let empty_exons: Vec<GffExon> = Vec::new();
     let empty_cds: Vec<GffCds> = Vec::new();
+    let mut chromosome_pool: HashMap<String, Arc<str>> = HashMap::new();
+    let mut biotype_pool: HashMap<String, Arc<str>> = HashMap::new();
 
     for (tid, gff_tr) in &transcripts {
         let gene = genes.get(&gff_tr.parent_gene);
@@ -486,8 +504,8 @@ fn parse_gff3_lines(
                 symbol: g.symbol.as_deref().map(Arc::from),
                 symbol_source: None,
                 hgnc_id: None,
-                biotype: Arc::from(g.biotype.as_str()),
-                chromosome: Arc::from(g.chromosome.as_str()),
+                biotype: intern(&mut biotype_pool, &g.biotype),
+                chromosome: intern(&mut chromosome_pool, &g.chromosome),
                 start: g.start,
                 end: g.end,
                 strand: g.strand,
@@ -497,8 +515,8 @@ fn parse_gff3_lines(
                 symbol: None,
                 symbol_source: None,
                 hgnc_id: None,
-                biotype: Arc::from("unknown"),
-                chromosome: Arc::from(gff_tr.chromosome.as_str()),
+                biotype: intern(&mut biotype_pool, "unknown"),
+                chromosome: intern(&mut chromosome_pool, &gff_tr.chromosome),
                 start: gff_tr.start,
                 end: gff_tr.end,
                 strand: gff_tr.strand,
@@ -655,8 +673,8 @@ fn parse_gff3_lines(
             stable_id: Arc::from(tid.as_str()),
             version: gff_tr.version,
             gene: gene_model,
-            biotype: Arc::from(gff_tr.biotype.as_str()),
-            chromosome: Arc::from(gff_tr.chromosome.as_str()),
+            biotype: intern(&mut biotype_pool, &gff_tr.biotype),
+            chromosome: intern(&mut chromosome_pool, &gff_tr.chromosome),
             start: gff_tr.start,
             end: gff_tr.end,
             strand: gff_tr.strand,
